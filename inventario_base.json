@@ -1,0 +1,443 @@
+[
+    {
+        "serial": "YK-001",
+        "usuario": "Carlos Mendoza",
+        "codigo_pipkins": "617101",
+        "estado": "Damage",
+        "ultima_conexion": "2026-03-30",
+        "historial": [
+            {
+                "fecha": "2025-01-10",
+                "hora": "08:00:00",
+                "accion": "Registro",
+                "estado": "In Use",
+                "usuario": "Carlos Mendoza",
+                "codigo_pipkins": "617101",
+                "comentario": "Initial registration"
+            },
+            {
+                "fecha": "2025-01-15",
+                "hora": "09:30:00",
+                "accion": "Check-in to Break",
+                "estado": "On Break",
+                "usuario": "Carlos Mendoza",
+                "codigo_pipkins": "617101",
+                "comentario": ""
+            },
+            {
+                "fecha": "2025-01-15",
+                "hora": "09:45:00",
+                "accion": "Check-out from Break",
+                "estado": "In Use",
+                "usuario": "Carlos Mendoza",
+                "codigo_pipkins": "617101",
+                "comentario": ""
+            },
+            {
+                "fecha": "2026-03-30",
+                "hora": "10:33:22",
+                "accion": "Loss",
+                "estado": "Loss",
+                "usuario": "Carlos Mendoza",
+                "codigo_pipkins": "617101",
+                "comentario": ""
+            },
+            {
+                "fecha": "2026-03-30",
+                "hora": "10:34:31",
+                "accion": "Damage",
+                "estado": "Damage",
+                "usuario": "Carlos Mendoza",
+                "codigo_pipkins": "617101",
+                "comentario": "xczxvczx"
+            }
+        ]
+    },
+    {
+        "serial": "YK-002",
+        "usuario": "María Rodríguez",
+        "codigo_pipkins": "617102",
+        "estado": "Loss",
+        "ultima_conexion": "2026-03-30",
+        "historial": [
+            {
+                "fecha": "2025-01-10",
+                "hora": "08:05:00",
+                "accion": "Registro",
+                "estado": "In Use",
+                "usuario": "María Rodríguez",
+                "codigo_pipkins": "617102",
+                "comentario": "Initial registration"
+            },
+            {
+                "fecha": "2025-01-15",
+                "hora": "10:00:00",
+                "accion": "Check-in to Lunch",
+                "estado": "On Lunch",
+                "usuario": "María Rodríguez",
+                "codigo_pipkins": "617102",
+                "comentario": ""
+            },
+            {
+                "fecha": "2025-01-15",
+                "hora": "10:45:00",
+                "accion": "Check-out from Lunch",
+                "estado": "In Use",
+                "usuario": "María Rodríguez",
+                "codigo_pipkins": "617102",
+                "comentario": ""
+            },
+            {
+                "fecha": "2026-03-30",
+                "hora": "10:55:02",
+                "accion": "Loss",
+                "estado": "Loss",
+                "usuario": "María Rodríguez",
+                "codigo_pipkins": "617102",
+                "comentario": "fdsdfdsfsdf"
+            }
+        ]
+    },
+    {
+        "serial": "YK-003",
+        "usuario": "Juan Pérez",
+        "codigo_pipkins": "617103",
+        "estado": "In Use",
+        "ultima_conexion": "2025-01-15",
+        "historial": [
+            {
+                "fecha": "2025-01-10",
+                "hora": "08:10:00",
+                "accion": "Registro",
+                "estado": "In Use",
+                "usuario": "Juan Pérez",
+                "codigo_pipkins": "617103",
+                "comentario": "Initial registration"
+            }
+        ]
+    },
+    {
+        "serial": "YK-004",
+        "usuario": "Ana García",
+        "codigo_pipkins": "617104",
+        "estado": "In Use",
+        "ultima_conexion": "2025-01-15",
+        "historial": [
+            {
+                "fecha": "2025-01-10",
+                "hora": "08:15:00",
+                "accion": "Registro",
+                "estado": "In Use",
+                "usuario": "Ana García",
+                "codigo_pipkins": "617104",
+                "comentario": "Initial registration"
+            },
+            {
+                "fecha": "2025-01-15",
+                "hora": "11:00:00",
+                "accion": "Check-in to Break",
+                "estado": "On Break",
+                "usuario": "Ana García",
+                "codigo_pipkins": "617104",
+                "comentario": ""
+            },
+            {
+                "fecha": "2025-01-15",
+                "hora": "11:15:00",
+                "accion": "Check-out from Break",
+                "estado": "In Use",
+                "usuario": "Ana García",
+                "codigo_pipkins": "617104",
+                "comentario": ""
+            }
+        ]
+    },
+    {
+        "serial": "YK-005",
+        "usuario": "Luis Hernández",
+        "codigo_pipkins": "617105",
+        "estado": "In Use",
+        "ultima_conexion": "2025-01-15",
+        "historial": [
+            {
+                "fecha": "2025-01-10",
+                "hora": "08:20:00",
+                "accion": "Registro",
+                "estado": "In Use",
+                "usuario": "Luis Hernández",
+                "codigo_pipkins": "617105",
+                "comentario": "Initial registration"
+            }
+        ]
+    },
+    {
+        "serial": "YK-006",
+        "usuario": "Patricia López",
+        "codigo_pipkins": "617106",
+        "estado": "In Use",
+        "ultima_conexion": "2025-01-15",
+        "historial": [
+            {
+                "fecha": "2025-01-10",
+                "hora": "08:25:00",
+                "accion": "Registro",
+                "estado": "In Use",
+                "usuario": "Patricia López",
+                "codigo_pipkins": "617106",
+                "comentario": "Initial registration"
+            },
+            {
+                "fecha": "2025-01-15",
+                "hora": "12:00:00",
+                "accion": "Check-in to Lunch",
+                "estado": "On Lunch",
+                "usuario": "Patricia López",
+                "codigo_pipkins": "617106",
+                "comentario": ""
+            },
+            {
+                "fecha": "2025-01-15",
+                "hora": "12:45:00",
+                "accion": "Check-out from Lunch",
+                "estado": "In Use",
+                "usuario": "Patricia López",
+                "codigo_pipkins": "617106",
+                "comentario": ""
+            }
+        ]
+    },
+    {
+        "serial": "YK-007",
+        "usuario": "Roberto Sánchez",
+        "codigo_pipkins": "617107",
+        "estado": "In Use",
+        "ultima_conexion": "2025-01-15",
+        "historial": [
+            {
+                "fecha": "2025-01-10",
+                "hora": "08:30:00",
+                "accion": "Registro",
+                "estado": "In Use",
+                "usuario": "Roberto Sánchez",
+                "codigo_pipkins": "617107",
+                "comentario": "Initial registration"
+            }
+        ]
+    },
+    {
+        "serial": "YK-008",
+        "usuario": "Carmen Díaz",
+        "codigo_pipkins": "617108",
+        "estado": "In Use",
+        "ultima_conexion": "2025-01-15",
+        "historial": [
+            {
+                "fecha": "2025-01-10",
+                "hora": "08:35:00",
+                "accion": "Registro",
+                "estado": "In Use",
+                "usuario": "Carmen Díaz",
+                "codigo_pipkins": "617108",
+                "comentario": "Initial registration"
+            },
+            {
+                "fecha": "2025-01-15",
+                "hora": "13:00:00",
+                "accion": "Check-in to Break",
+                "estado": "On Break",
+                "usuario": "Carmen Díaz",
+                "codigo_pipkins": "617108",
+                "comentario": ""
+            },
+            {
+                "fecha": "2025-01-15",
+                "hora": "13:15:00",
+                "accion": "Check-out from Break",
+                "estado": "In Use",
+                "usuario": "Carmen Díaz",
+                "codigo_pipkins": "617108",
+                "comentario": ""
+            }
+        ]
+    },
+    {
+        "serial": "YK-009",
+        "usuario": "Fernando Torres",
+        "codigo_pipkins": "617109",
+        "estado": "In Use",
+        "ultima_conexion": "2025-01-15",
+        "historial": [
+            {
+                "fecha": "2025-01-10",
+                "hora": "08:40:00",
+                "accion": "Registro",
+                "estado": "In Use",
+                "usuario": "Fernando Torres",
+                "codigo_pipkins": "617109",
+                "comentario": "Initial registration"
+            }
+        ]
+    },
+    {
+        "serial": "YK-010",
+        "usuario": "Isabel Ramírez",
+        "codigo_pipkins": "617110",
+        "estado": "In Use",
+        "ultima_conexion": "2025-01-15",
+        "historial": [
+            {
+                "fecha": "2025-01-10",
+                "hora": "08:45:00",
+                "accion": "Registro",
+                "estado": "In Use",
+                "usuario": "Isabel Ramírez",
+                "codigo_pipkins": "617110",
+                "comentario": "Initial registration"
+            },
+            {
+                "fecha": "2025-01-15",
+                "hora": "14:00:00",
+                "accion": "Check-in to Lunch",
+                "estado": "On Lunch",
+                "usuario": "Isabel Ramírez",
+                "codigo_pipkins": "617110",
+                "comentario": ""
+            },
+            {
+                "fecha": "2025-01-15",
+                "hora": "14:45:00",
+                "accion": "Check-out from Lunch",
+                "estado": "In Use",
+                "usuario": "Isabel Ramírez",
+                "codigo_pipkins": "617110",
+                "comentario": ""
+            }
+        ]
+    },
+    {
+        "serial": "YK-011",
+        "usuario": "Miguel Ángel Flores",
+        "codigo_pipkins": "617111",
+        "estado": "In Use",
+        "ultima_conexion": "2025-01-15",
+        "historial": [
+            {
+                "fecha": "2025-01-10",
+                "hora": "08:50:00",
+                "accion": "Registro",
+                "estado": "In Use",
+                "usuario": "Miguel Ángel Flores",
+                "codigo_pipkins": "617111",
+                "comentario": "Initial registration"
+            }
+        ]
+    },
+    {
+        "serial": "YK-012",
+        "usuario": "Laura Martínez",
+        "codigo_pipkins": "617112",
+        "estado": "In Use",
+        "ultima_conexion": "2025-01-15",
+        "historial": [
+            {
+                "fecha": "2025-01-10",
+                "hora": "08:55:00",
+                "accion": "Registro",
+                "estado": "In Use",
+                "usuario": "Laura Martínez",
+                "codigo_pipkins": "617112",
+                "comentario": "Initial registration"
+            }
+        ]
+    },
+    {
+        "serial": "YK-013",
+        "usuario": "David González",
+        "codigo_pipkins": "617113",
+        "estado": "In Use",
+        "ultima_conexion": "2025-01-15",
+        "historial": [
+            {
+                "fecha": "2025-01-10",
+                "hora": "09:00:00",
+                "accion": "Registro",
+                "estado": "In Use",
+                "usuario": "David González",
+                "codigo_pipkins": "617113",
+                "comentario": "Initial registration"
+            },
+            {
+                "fecha": "2025-01-15",
+                "hora": "15:00:00",
+                "accion": "Check-in to Break",
+                "estado": "On Break",
+                "usuario": "David González",
+                "codigo_pipkins": "617113",
+                "comentario": ""
+            },
+            {
+                "fecha": "2025-01-15",
+                "hora": "15:15:00",
+                "accion": "Check-out from Break",
+                "estado": "In Use",
+                "usuario": "David González",
+                "codigo_pipkins": "617113",
+                "comentario": ""
+            }
+        ]
+    },
+    {
+        "serial": "YK-014",
+        "usuario": "Sofía Ruiz",
+        "codigo_pipkins": "617114",
+        "estado": "In Use",
+        "ultima_conexion": "2025-01-15",
+        "historial": [
+            {
+                "fecha": "2025-01-10",
+                "hora": "09:05:00",
+                "accion": "Registro",
+                "estado": "In Use",
+                "usuario": "Sofía Ruiz",
+                "codigo_pipkins": "617114",
+                "comentario": "Initial registration"
+            }
+        ]
+    },
+    {
+        "serial": "YK-015",
+        "usuario": "Alejandro Vargas",
+        "codigo_pipkins": "617115",
+        "estado": "In Use",
+        "ultima_conexion": "2025-01-15",
+        "historial": [
+            {
+                "fecha": "2025-01-10",
+                "hora": "09:10:00",
+                "accion": "Registro",
+                "estado": "In Use",
+                "usuario": "Alejandro Vargas",
+                "codigo_pipkins": "617115",
+                "comentario": "Initial registration"
+            },
+            {
+                "fecha": "2025-01-15",
+                "hora": "16:00:00",
+                "accion": "Check-in to Lunch",
+                "estado": "On Lunch",
+                "usuario": "Alejandro Vargas",
+                "codigo_pipkins": "617115",
+                "comentario": ""
+            },
+            {
+                "fecha": "2025-01-15",
+                "hora": "16:45:00",
+                "accion": "Check-out from Lunch",
+                "estado": "In Use",
+                "usuario": "Alejandro Vargas",
+                "codigo_pipkins": "617115",
+                "comentario": ""
+            }
+        ]
+    }
+]
