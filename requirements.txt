@@ -1,0 +1,6 @@
+customtkinter
+tk
+
+# Las siguientes librerías son parte de la biblioteca estándar de Python y no requieren instalación:
+# json, os, datetime, csv
+# tkinter.ttk y tkinter están incluidas en la mayoría de instalaciones de Python, pero en algunos sistemas pueden requerir el paquete 'tk'.
