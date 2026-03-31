@@ -1,24 +1,49 @@
 # YubiKey Dashboard
+## Uso y portabilidad
 
-Este proyecto es una herramienta para la gestión y control de inventario de YubiKeys en una organización. Permite visualizar, registrar y actualizar información sobre las YubiKeys disponibles, asignadas y en uso, utilizando un archivo base de inventario en formato JSON y una interfaz desarrollada en Python.
+Para asegurar que el programa funcione en cualquier computador, sigue estos pasos:
 
-## Archivos principales
+### 1. Instala Python 3.x
+Descarga e instala Python desde [python.org](https://www.python.org/downloads/).
 
-- **yubikey_dashboard.py**: Script principal de la aplicación. Contiene la lógica para cargar, mostrar y modificar el inventario de YubiKeys.
-- **inventario_base.json**: Archivo de datos en formato JSON que almacena la información de todas las YubiKeys gestionadas por la aplicación.
+### 2. Crea un entorno virtual (recomendado)
+Esto aísla las dependencias y evita conflictos con otros programas.
 
-## Requisitos
+En Windows:
+```bash
+python -m venv venv
+venv\Scripts\activate
+```
+En Mac/Linux:
+```bash
+python3 -m venv venv
+source venv/bin/activate
+```
 
-- Python 3.8 o superior
-- (Opcional) Bibliotecas adicionales si el script las requiere (por ejemplo, `tkinter`, `pandas`, etc.)
+### 3. Instala las dependencias
+```bash
+pip install -r requirements.txt
+```
 
-## Instalación
+### 4. Ejecuta el programa principal
+```bash
+python yubikey_dashboard.py
+```
 
-1. Clona este repositorio o descarga los archivos `yubikey_dashboard.py` e `inventario_base.json` en una carpeta local.
-2. Asegúrate de tener Python instalado. Puedes verificarlo ejecutando:
-   ```bash
-   python --version
-   ```
+### Notas de portabilidad
+- Usa rutas relativas en el código para acceder a archivos como `inventario_base.json`.
+- Asegúrate de que todos los archivos necesarios estén en la misma carpeta.
+- Si compartes el proyecto, incluye siempre este README y el archivo requirements.txt.
+
+## Archivos
+
+- `yubikey_dashboard.py`: Interfaz principal y lógica del programa.
+- `inventario_base.json`: Base de datos de inventario de YubiKeys.
+- `requirements.txt`: Dependencias necesarias.
+
+## Autor
+
+Tu nombre aquí
 3. Si el script requiere librerías externas, instálalas con:
    ```bash
    pip install -r requirements.txt
