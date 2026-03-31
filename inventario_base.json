@@ -100,10 +100,10 @@
     },
     {
         "serial": "YK-003",
-        "usuario": "Juan Pérez",
-        "codigo_pipkins": "617103",
+        "usuario": "dsfsdfsdf",
+        "codigo_pipkins": "4532452",
         "estado": "In Use",
-        "ultima_conexion": "2025-01-15",
+        "ultima_conexion": "2026-03-31",
         "historial": [
             {
                 "fecha": "2025-01-10",
@@ -113,6 +113,42 @@
                 "usuario": "Juan Pérez",
                 "codigo_pipkins": "617103",
                 "comentario": "Initial registration"
+            },
+            {
+                "fecha": "2026-03-31",
+                "hora": "09:48:43",
+                "accion": "Check-in to Break",
+                "estado": "On Break",
+                "usuario": "Juan Pérez",
+                "codigo_pipkins": "617103",
+                "comentario": ""
+            },
+            {
+                "fecha": "2026-03-31",
+                "hora": "09:49:08",
+                "accion": "Check-out from Break",
+                "estado": "In Use",
+                "usuario": "Juan Pérez",
+                "codigo_pipkins": "617103",
+                "comentario": ""
+            },
+            {
+                "fecha": "2026-03-31",
+                "hora": "09:49:27",
+                "accion": "Return (previous: Juan Pérez)",
+                "estado": "Available",
+                "usuario": "",
+                "codigo_pipkins": "",
+                "comentario": "dasfsdfsdff"
+            },
+            {
+                "fecha": "2026-03-31",
+                "hora": "09:49:59",
+                "accion": "Assign to dsfsdfsdf",
+                "estado": "In Use",
+                "usuario": "dsfsdfsdf",
+                "codigo_pipkins": "4532452",
+                "comentario": ""
             }
         ]
     },
@@ -120,8 +156,8 @@
         "serial": "YK-004",
         "usuario": "Ana García",
         "codigo_pipkins": "617104",
-        "estado": "In Use",
-        "ultima_conexion": "2025-01-15",
+        "estado": "Loss",
+        "ultima_conexion": "2026-03-31",
         "historial": [
             {
                 "fecha": "2025-01-10",
@@ -149,6 +185,15 @@
                 "usuario": "Ana García",
                 "codigo_pipkins": "617104",
                 "comentario": ""
+            },
+            {
+                "fecha": "2026-03-31",
+                "hora": "09:50:46",
+                "accion": "Loss",
+                "estado": "Loss",
+                "usuario": "Ana García",
+                "codigo_pipkins": "617104",
+                "comentario": "xcvxcvxc"
             }
         ]
     },
