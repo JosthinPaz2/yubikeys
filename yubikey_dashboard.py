@@ -1,6 +1,8 @@
 # ============================================================================
-# IMPORTACIÓN DE LIBRERÍAS
+# YUBIKEY MANAGEMENT DASHBOARD - YubiDash
+# Versión: 6.4 (Reportes Mejorados + UI Profesional)
 # ============================================================================
+
 import customtkinter as ctk
 import json
 import os
@@ -8,9 +10,12 @@ import tkinter.ttk as ttk
 from datetime import datetime
 import csv
 from tkinter import filedialog
+import serial
+import serial.tools.list_ports
+import threading
 
 # ============================================================================
-# CONFIGURACIÓN VISUAL DE LA APLICACIÓN
+# CONFIGURACIÓN VISUAL
 # ============================================================================
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
@@ -21,98 +26,1563 @@ SUCCESS_GREEN = "#10b981"
 BORDER_DEFAULT = "#3b8ed0"
 JSON_FILE = "inventario_base.json"
 
+REPORT_COLORS = {
+    "loss_bg": "#7f1d1d",
+    "loss_bg_light": "#991b1b",
+    "loss_text": "#fca5a5",
+    "loss_border": "#dc2626",
+    "damage_bg": "#5b21b6",
+    "damage_bg_light": "#6d28d9",
+    "damage_text": "#c4b5fd",
+    "damage_border": "#7c3aed",
+    "summary_bg": "#1e40af",
+    "summary_bg_light": "#1d4ed8",
+    "summary_text": "#93c5fd",
+    "summary_border": "#3b82f6",
+    "card_bg": "#1e293b",
+    "card_border": "#334155",
+    "table_header": "#0f172a",
+    "table_row": "#1e293b",
+    "table_row_alt": "#0f172a",
+    "table_text": "#e2e8f0",
+    "table_border": "#334155"
+}
+
 # ============================================================================
-# DICCIONARIO DE COLORES POR ESTADO
+# CLASE DE CONFIGURACIÓN RESPONSIVA
 # ============================================================================
+class ResponsiveConfig:
+    def __init__(self):
+        self.screen_width = 1100
+        self.screen_height = 600
+        self.is_laptop = False
+        self.scale_factor = 1.0
+        self.detect_screen()
+    
+    def detect_screen(self):
+        try:
+            root = ctk.CTk()
+            self.screen_width = root.winfo_screenwidth()
+            self.screen_height = root.winfo_screenheight()
+            root.destroy()
+            self.is_laptop = self.screen_width <= 1536
+            if self.screen_width >= 1920:
+                self.scale_factor = 1.2
+            elif self.screen_width >= 1536:
+                self.scale_factor = 1.0
+            else:
+                self.scale_factor = 0.9
+        except:
+            self.is_laptop = False
+            self.scale_factor = 1.0
+    
+    def get_window_size(self):
+        if self.is_laptop:
+            return f"{int(self.screen_width * 0.95)}x{int(self.screen_height * 0.90)}"
+        else:
+            return "1400x800"
+    
+    def get_font_size(self, base_size):
+        return int(base_size * self.scale_factor)
+    
+    def get_sidebar_width(self):
+        return 200 if self.is_laptop else 240
+    
+    def get_entry_width(self):
+        return 350 if self.is_laptop else 450
+    
+    def get_modal_size(self, base_width=500, base_height=350):
+        if self.is_laptop:
+            return f"{int(base_width * 0.9)}x{int(base_height * 0.85)}"
+        else:
+            return f"{base_width}x{base_height}"
+    
+    def center_modal(self, parent, width, height):
+        parent_x = parent.winfo_x()
+        parent_y = parent.winfo_y()
+        parent_w = parent.winfo_width()
+        parent_h = parent.winfo_height()
+        
+        modal_x = parent_x + (parent_w // 2) - (width // 2)
+        modal_y = parent_y + (parent_h // 2) - (height // 2)
+        
+        return f"{width}x{height}+{modal_x}+{modal_y}"
+
+RESPONSIVE = ResponsiveConfig()
+
 ESTADO_COLORES = {
-    "Disponible": "#10b981",
     "Available": "#10b981",
-    "En Uso": "#3b82f6",
     "In Use": "#3b82f6",
-    "En Break": "#f59e0b",
     "On Break": "#f59e0b",
-    "En Lunch": "#f97316",
     "On Lunch": "#f97316",
-    "Pérdida": "#ef4444",
     "Loss": "#ef4444",
-    "Daño": "#8b5cf6",
     "Damage": "#8b5cf6"
 }
 
 # ============================================================================
-# CLASE PRINCIPAL DE LA APLICACIÓN
+# CLASE SCANNER SERIAL
+# ============================================================================
+class SerialScanner:
+    def __init__(self, app):
+        self.app = app
+        self.serial_port = None
+        self.is_connected = False
+        self.read_thread = None
+        self.is_reading = False
+        self.auto_scan_enabled = False
+        self.current_panel = None
+        self.port_name = None
+        self.baud_rate = 9600
+        
+    def find_ports(self):
+        ports = serial.tools.list_ports.comports()
+        return [port.device for port in ports]
+    
+    def connect(self, port_name, baud_rate=9600):
+        try:
+            self.port_name = port_name
+            self.baud_rate = baud_rate
+            self.serial_port = serial.Serial(port_name, baud_rate, timeout=1)
+            self.is_connected = True
+            self.start_reading()
+            return True
+        except Exception as e:
+            print(f"Error conectando: {e}")
+            self.is_connected = False
+            return False
+    
+    def disconnect(self):
+        self.is_reading = False
+        self.auto_scan_enabled = False
+        if self.read_thread and self.read_thread.is_alive():
+            self.read_thread.join(timeout=2)
+        if self.serial_port and self.serial_port.is_open:
+            self.serial_port.close()
+        self.is_connected = False
+    
+    def start_reading(self):
+        self.is_reading = True
+        self.read_thread = threading.Thread(target=self._read_loop, daemon=True)
+        self.read_thread.start()
+    
+    def _read_loop(self):
+        while self.is_reading and self.is_connected:
+            try:
+                if self.serial_port and self.serial_port.is_open and self.serial_port.in_waiting > 0:
+                    data = self.serial_port.readline().decode('utf-8').strip()
+                    if data and self.auto_scan_enabled:
+                        serial_data = ''.join(c for c in data if c.isalnum()).upper()
+                        if len(serial_data) >= 6:
+                            self.app.after(0, self.app.process_serial_data, serial_data)
+            except Exception as e:
+                print(f"Error leyendo: {e}")
+                break
+    
+    def enable_auto_scan(self, panel_name):
+        self.auto_scan_enabled = True
+        self.current_panel = panel_name
+    
+    def disable_auto_scan(self):
+        self.auto_scan_enabled = False
+        self.current_panel = None
+
+# ============================================================================
+# CLASE PRINCIPAL
 # ============================================================================
 class YubiDash(ctk.CTk):
     def __init__(self):
         super().__init__()
         
-        self.title("Yubikey Management Dashboard")
-        self.geometry("1100x600")
+        self.title("Yubikey Management Dashboard - WFM System")
+        self.geometry(RESPONSIVE.get_window_size())
+        self.minsize(1100, 650)
         self.configure(fg_color=MIDNIGHT_BLUE)
-        self.resizable(False, False)
-
-        self.initialize_database()
-
+        self.resizable(True, True)
+        
+        self.screen_width = RESPONSIVE.screen_width
+        self.screen_height = RESPONSIVE.screen_height
+        
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
+        
+        self.current_sidebar_width = RESPONSIVE.get_sidebar_width()
+        self.bind("<Configure>", self.on_window_resize)
+        
+        self.scanner = SerialScanner(self)
+        self.current_panel_name = None
+        self.scanner_active = False
+        
+        self.initialize_database()
+        self.setup_ui()
+        
+        dispositivo = "💻 Laptop" if RESPONSIVE.is_laptop else "🖥️ Desktop"
+        print(f"✓ YubiDash iniciado - {dispositivo} ({self.screen_width}x{self.screen_height})")
 
-        # ========================================================================
-        # BARRA LATERAL (SIDEBAR)
-        # ========================================================================
-        self.sidebar = ctk.CTkFrame(self, width=200, corner_radius=0, fg_color=SLATE_GRAY)
+    def on_window_resize(self, event):
+        if event.widget == self:
+            nuevo_ancho = RESPONSIVE.get_sidebar_width()
+            if nuevo_ancho != self.current_sidebar_width:
+                self.sidebar.configure(width=nuevo_ancho)
+                self.current_sidebar_width = nuevo_ancho
+
+    def setup_ui(self):
+        # ====================================================================
+        # BARRA LATERAL
+        # ====================================================================
+        self.sidebar = ctk.CTkFrame(self, width=self.current_sidebar_width, 
+                                   corner_radius=0, fg_color=SLATE_GRAY)
         self.sidebar.grid(row=0, column=0, sticky="nsew")
+        self.sidebar.grid_propagate(False)
         
-        ctk.CTkLabel(self.sidebar, text="WFM SYSTEM", font=("Inter", 20, "bold")).pack(pady=30)
+        title_frame = ctk.CTkFrame(self.sidebar, fg_color="transparent")
+        title_frame.pack(pady=20, padx=15, fill="x")
         
-        self.btn_nueva = ctk.CTkButton(self.sidebar, text="Register New", 
-                                       command=self.show_nueva_panel, corner_radius=15)
-        self.btn_nueva.pack(pady=8, padx=20, fill="x")
+        ctk.CTkLabel(title_frame, text="🔐 WFM SYSTEM", 
+                    font=("Inter", RESPONSIVE.get_font_size(22), "bold"),
+                    text_color="#38bdf8").pack()
         
-        self.btn_ingreso = ctk.CTkButton(self.sidebar, text="Break/Lunch", 
-                                         command=self.show_ingreso_panel, corner_radius=15)
-        self.btn_ingreso.pack(pady=8, padx=20, fill="x")
+        ctk.CTkLabel(title_frame, text="YubiKey Manager", 
+                    font=("Inter", 11),
+                    text_color="#94a3b8").pack()
         
-        self.btn_asignacion = ctk.CTkButton(self.sidebar, text="Assign/Return", 
-                                            command=self.show_asignacion_panel, corner_radius=15)
-        self.btn_asignacion.pack(pady=8, padx=20, fill="x")
+        self.status_frame = ctk.CTkFrame(self.sidebar, fg_color="#0f172a", 
+                                        corner_radius=10, border_width=1,
+                                        border_color="#334155")
+        self.status_frame.pack(pady=15, padx=15, fill="x")
         
-        self.btn_perdida = ctk.CTkButton(self.sidebar, text="Loss/Damage", 
-                                         command=self.show_perdida_panel, corner_radius=15)
-        self.btn_perdida.pack(pady=8, padx=20, fill="x")
+        status_header = ctk.CTkFrame(self.status_frame, fg_color="transparent")
+        status_header.pack(fill="x", padx=10, pady=5)
         
-        self.btn_inv = ctk.CTkButton(self.sidebar, text="INVENTORY", 
-                                     fg_color="transparent", border_width=1, 
-                                     command=self.show_inv_view, corner_radius=15)
-        self.btn_inv.pack(pady=8, padx=20, fill="x")
+        self.status_dot = ctk.CTkLabel(status_header, text="🔴", 
+                                      font=("Segoe UI", 16))
+        self.status_dot.pack(side="left", padx=5)
         
-        self.btn_report = ctk.CTkButton(self.sidebar, text="REPORTS", 
-                                        fg_color="transparent", border_width=1, 
-                                        command=self.show_report_view, corner_radius=15)
-        self.btn_report.pack(pady=8, padx=20, fill="x")
-
-        # ========================================================================
+        ctk.CTkLabel(status_header, text="Scanner Status", 
+                    font=("Inter", 11, "bold"), 
+                    text_color="#94a3b8").pack(side="left", padx=5)
+        
+        self.status_label = ctk.CTkLabel(self.status_frame, 
+                                        text="Desconectado", 
+                                        font=("Inter", RESPONSIVE.get_font_size(12), "bold"), 
+                                        text_color="#ef4444")
+        self.status_label.pack(pady=8)
+        
+        self.btn_config_port = ctk.CTkButton(self.status_frame,
+                                            text="🔌 Configurar",
+                                            command=self.show_port_config,
+                                            fg_color="#475569",
+                                            hover_color="#64748b",
+                                            font=("Inter", 11),
+                                            height=30,
+                                            width=100,
+                                            corner_radius=8)
+        self.btn_config_port.pack(pady=8)
+        
+        btn_config = {
+            "corner_radius": 10,
+            "height": 42,
+            "font": ("Inter", RESPONSIVE.get_font_size(13), "bold")
+        }
+        
+        ctk.CTkLabel(self.sidebar, text="MAIN MENU", 
+                    font=("Inter", 11, "bold"),
+                    text_color="#64748b").pack(pady=(15, 5), padx=15, anchor="w")
+        
+        self.btn_nueva = ctk.CTkButton(self.sidebar, text="📝 Register New", 
+                                       command=self.show_nueva_panel,
+                                       fg_color="#3b82f6", hover_color="#2563eb",
+                                       **btn_config)
+        self.btn_nueva.pack(pady=4, padx=15, fill="x")
+        
+        self.btn_ingreso = ctk.CTkButton(self.sidebar, text="⏸️ Break/Lunch", 
+                                         command=self.show_ingreso_panel,
+                                         fg_color="#f59e0b", hover_color="#d97706",
+                                         **btn_config)
+        self.btn_ingreso.pack(pady=4, padx=15, fill="x")
+        
+        self.btn_asignacion = ctk.CTkButton(self.sidebar, text="🔄 Assign/Return", 
+                                            command=self.show_asignacion_panel,
+                                            fg_color="#8b5cf6", hover_color="#7c3aed",
+                                            **btn_config)
+        self.btn_asignacion.pack(pady=4, padx=15, fill="x")
+        
+        self.btn_perdida = ctk.CTkButton(self.sidebar, text="⚠️ Loss/Damage", 
+                                         command=self.show_perdida_panel,
+                                         fg_color="#ef4444", hover_color="#dc2626",
+                                         **btn_config)
+        self.btn_perdida.pack(pady=4, padx=15, fill="x")
+        
+        ctk.CTkLabel(self.sidebar, text="DATA & REPORTS", 
+                    font=("Inter", 11, "bold"),
+                    text_color="#64748b").pack(pady=(20, 5), padx=15, anchor="w")
+        
+        self.btn_inv = ctk.CTkButton(self.sidebar, text="📋 INVENTORY", 
+                                     fg_color="#1e293b", hover_color="#334155",
+                                     border_width=1, border_color="#475569",
+                                     command=self.show_inv_view, **btn_config)
+        self.btn_inv.pack(pady=4, padx=15, fill="x")
+        
+        self.btn_report = ctk.CTkButton(self.sidebar, text="📊 REPORTS", 
+                                        fg_color="#1e293b", hover_color="#334155",
+                                        border_width=1, border_color="#475569",
+                                        command=self.show_report_view, **btn_config)
+        self.btn_report.pack(pady=4, padx=15, fill="x")
+        
+        # ====================================================================
         # ÁREA PRINCIPAL
-        # ========================================================================
+        # ====================================================================
         self.view_main = ctk.CTkFrame(self, fg_color="transparent")
         self.view_main.grid(row=0, column=1, sticky="nsew")
         self.view_main.grid_columnconfigure(0, weight=1)
         self.view_main.grid_rowconfigure(0, weight=1)
-
+        
         self.panel_nueva = ctk.CTkFrame(self.view_main, fg_color="transparent")
         self.panel_ingreso = ctk.CTkFrame(self.view_main, fg_color="transparent")
         self.panel_asignacion = ctk.CTkFrame(self.view_main, fg_color="transparent")
         self.panel_perdida = ctk.CTkFrame(self.view_main, fg_color="transparent")
         self.view_inv = ctk.CTkFrame(self.view_main, fg_color="transparent")
         self.view_report = ctk.CTkFrame(self.view_main, fg_color="transparent")
+        
+        self.setup_all_panels()
+        self.show_nueva_panel()
 
+    def setup_all_panels(self):
         self.setup_nueva_panel()
         self.setup_ingreso_panel()
         self.setup_asignacion_panel()
         self.setup_perdida_panel()
         self.setup_inv_view()
         self.setup_report_view()
+
+    def hide_all_panels(self):
+        for panel in [self.panel_nueva, self.panel_ingreso, self.panel_asignacion, 
+                      self.panel_perdida, self.view_inv, self.view_report]:
+            panel.pack_forget()
+
+    # ========================================================================
+    # PANEL DE REPORTES MEJORADO (HERMOSO)
+    # ========================================================================
+    def setup_report_view(self):
+        # Header principal
+        header_frame = ctk.CTkFrame(self.view_report, fg_color="transparent")
+        header_frame.pack(fill="x", padx=50, pady=(30, 20))
         
-        self.show_nueva_panel()
+        ctk.CTkLabel(header_frame, text="📊 Incident Reports & Analytics", 
+                    font=("Inter", RESPONSIVE.get_font_size(36), "bold"), 
+                    text_color="#38bdf8").pack()
+        
+        ctk.CTkLabel(header_frame, text="Track losses, damages, and system statistics", 
+                    font=("Inter", 14),
+                    text_color="#94a3b8").pack(pady=8)
+        
+        # Tabs mejorados
+        self.report_tabs = ctk.CTkTabview(self.view_report, corner_radius=15,
+                                         fg_color="transparent",
+                                         border_width=0)
+        self.report_tabs.pack(fill="both", expand=True, padx=50, pady=20)
+        
+        # Configurar apariencia de tabs
+        self.report_tabs._segmented_button.configure(
+            fg_color="#1e293b",
+            selected_color="#3b82f6",
+            selected_hover_color="#2563eb",
+            unselected_color="#1e293b",
+            unselected_hover_color="#334155",
+            corner_radius=10,
+            height=35
+        )
+        
+        self.tab_loss = self.report_tabs.add("  🔴 Loss  ")
+        self.tab_damage = self.report_tabs.add("  🟣 Damage  ")
+        self.tab_summary = self.report_tabs.add("  📈 Summary  ")
+        
+        # Configurar cada tab
+        self.setup_loss_report_tab_beautiful()
+        self.setup_damage_report_tab_beautiful()
+        self.setup_summary_tab_beautiful()
+
+    def setup_loss_report_tab_beautiful(self):
+        """Configuración hermosa para la pestaña de pérdidas"""
+        
+        # Tarjeta de estadísticas principal
+        stats_card = ctk.CTkFrame(self.tab_loss, fg_color=REPORT_COLORS["loss_bg"],
+                                 corner_radius=20, border_width=2,
+                                 border_color=REPORT_COLORS["loss_border"])
+        stats_card.pack(fill="x", padx=40, pady=25)
+        
+        # Contenido de la tarjeta
+        ctk.CTkLabel(stats_card, text="🔴 Total Lost Yubikeys", 
+                    font=("Inter", RESPONSIVE.get_font_size(18), "bold"),
+                    text_color="white").pack(pady=(20, 10))
+        
+        self.loss_count_label = ctk.CTkLabel(stats_card, text="0", 
+                                            font=("Inter", RESPONSIVE.get_font_size(72), "bold"),
+                                            text_color=REPORT_COLORS["loss_text"])
+        self.loss_count_label.pack(pady=10)
+        
+        ctk.CTkLabel(stats_card, text="yubikeys reported as lost", 
+                    font=("Inter", 14),
+                    text_color=REPORT_COLORS["loss_text"]).pack(pady=(0, 20))
+        
+        # Tabla hermosa
+        table_card = ctk.CTkFrame(self.tab_loss, fg_color=REPORT_COLORS["card_bg"],
+                                 corner_radius=15, border_width=1,
+                                 border_color=REPORT_COLORS["card_border"])
+        table_card.pack(fill="both", expand=True, padx=40, pady=20)
+        
+        # Header de la tabla
+        table_header = ctk.CTkFrame(table_card, fg_color="transparent")
+        table_header.pack(fill="x", padx=25, pady=(20, 15))
+        
+        ctk.CTkLabel(table_header, text="📋 Lost Yubikeys List", 
+                    font=("Inter", RESPONSIVE.get_font_size(20), "bold"),
+                    text_color=REPORT_COLORS["loss_text"]).pack()
+        
+        # Frame para la tabla con scroll
+        tree_frame = ctk.CTkFrame(table_card, fg_color=REPORT_COLORS["table_header"],
+                                 corner_radius=10, border_width=1,
+                                 border_color=REPORT_COLORS["table_border"])
+        tree_frame.pack(fill="both", expand=True, padx=25, pady=(0, 25))
+        
+        # Columnas
+        loss_cols = ("Serial", "User", "Pipkins", "Date", "Time")
+        self.loss_tree = ttk.Treeview(tree_frame, columns=loss_cols,
+                                     show='headings', height=12)
+        
+        # Estilo personalizado de la tabla
+        style = ttk.Style()
+        style.configure('Loss.Treeview',
+                       font=('Inter', 12),
+                       rowheight=40,
+                       background=REPORT_COLORS["table_row"],
+                       fieldbackground=REPORT_COLORS["table_row"],
+                       foreground=REPORT_COLORS["table_text"],
+                       borderwidth=0)
+        
+        style.configure('Loss.Treeview.Heading',
+                       font=('Inter', 13, 'bold'),
+                       background=REPORT_COLORS["table_header"],
+                       foreground=REPORT_COLORS["loss_text"],
+                       borderwidth=0)
+        
+        style.map('Loss.Treeview',
+                 background=[('selected', REPORT_COLORS["loss_bg"])],
+                 foreground=[('selected', 'white')])
+        
+        # Configurar columnas
+        col_widths = {"Serial": 150, "User": 200, "Pipkins": 120, "Date": 130, "Time": 100}
+        for col in loss_cols:
+            self.loss_tree.heading(col, text=col, anchor="w")
+            self.loss_tree.column(col, anchor="w", width=col_widths.get(col, 150), minwidth=100)
+        
+        # Scrollbars
+        scrollbar_y = ttk.Scrollbar(tree_frame, orient="vertical", command=self.loss_tree.yview)
+        scrollbar_x = ttk.Scrollbar(tree_frame, orient="horizontal", command=self.loss_tree.xview)
+        self.loss_tree.configure(yscrollcommand=scrollbar_y.set, xscrollcommand=scrollbar_x.set)
+        
+        self.loss_tree.grid(row=0, column=0, sticky="nsew", padx=2, pady=2)
+        scrollbar_y.grid(row=0, column=1, sticky="ns", pady=2)
+        scrollbar_x.grid(row=1, column=0, sticky="ew", padx=2)
+        
+        tree_frame.grid_rowconfigure(0, weight=1)
+        tree_frame.grid_columnconfigure(0, weight=1)
+        
+        # Botón de exportar
+        ctk.CTkButton(self.tab_loss, text="📥 Export to CSV",
+                     command=self.export_loss_report,
+                     fg_color="#ef4444", hover_color="#dc2626",
+                     font=("Inter", RESPONSIVE.get_font_size(14), "bold"),
+                     height=45, width=220, corner_radius=12).pack(pady=20)
+
+    def setup_damage_report_tab_beautiful(self):
+        """Configuración hermosa para la pestaña de daños"""
+        
+        # Tarjeta de estadísticas principal
+        stats_card = ctk.CTkFrame(self.tab_damage, fg_color=REPORT_COLORS["damage_bg"],
+                                 corner_radius=20, border_width=2,
+                                 border_color=REPORT_COLORS["damage_border"])
+        stats_card.pack(fill="x", padx=40, pady=25)
+        
+        ctk.CTkLabel(stats_card, text="🟣 Total Damaged Yubikeys",
+                    font=("Inter", RESPONSIVE.get_font_size(18), "bold"),
+                    text_color="white").pack(pady=(20, 10))
+        
+        self.damage_count_label = ctk.CTkLabel(stats_card, text="0",
+                                              font=("Inter", RESPONSIVE.get_font_size(72), "bold"),
+                                              text_color=REPORT_COLORS["damage_text"])
+        self.damage_count_label.pack(pady=10)
+        
+        ctk.CTkLabel(stats_card, text="yubikeys reported as damaged",
+                    font=("Inter", 14),
+                    text_color=REPORT_COLORS["damage_text"]).pack(pady=(0, 20))
+        
+        # Tabla hermosa
+        table_card = ctk.CTkFrame(self.tab_damage, fg_color=REPORT_COLORS["card_bg"],
+                                 corner_radius=15, border_width=1,
+                                 border_color=REPORT_COLORS["card_border"])
+        table_card.pack(fill="both", expand=True, padx=40, pady=20)
+        
+        table_header = ctk.CTkFrame(table_card, fg_color="transparent")
+        table_header.pack(fill="x", padx=25, pady=(20, 15))
+        
+        ctk.CTkLabel(table_header, text="📋 Damaged Yubikeys List",
+                    font=("Inter", RESPONSIVE.get_font_size(20), "bold"),
+                    text_color=REPORT_COLORS["damage_text"]).pack()
+        
+        tree_frame = ctk.CTkFrame(table_card, fg_color=REPORT_COLORS["table_header"],
+                                 corner_radius=10, border_width=1,
+                                 border_color=REPORT_COLORS["table_border"])
+        tree_frame.pack(fill="both", expand=True, padx=25, pady=(0, 25))
+        
+        damage_cols = ("Serial", "User", "Pipkins", "Date", "Time")
+        self.damage_tree = ttk.Treeview(tree_frame, columns=damage_cols,
+                                       show='headings', height=12)
+        
+        style = ttk.Style()
+        style.configure('Damage.Treeview',
+                       font=('Inter', 12),
+                       rowheight=40,
+                       background=REPORT_COLORS["table_row"],
+                       fieldbackground=REPORT_COLORS["table_row"],
+                       foreground=REPORT_COLORS["table_text"],
+                       borderwidth=0)
+        
+        style.configure('Damage.Treeview.Heading',
+                       font=('Inter', 13, 'bold'),
+                       background=REPORT_COLORS["table_header"],
+                       foreground=REPORT_COLORS["damage_text"],
+                       borderwidth=0)
+        
+        style.map('Damage.Treeview',
+                 background=[('selected', REPORT_COLORS["damage_bg"])],
+                 foreground=[('selected', 'white')])
+        
+        col_widths = {"Serial": 150, "User": 200, "Pipkins": 120, "Date": 130, "Time": 100}
+        for col in damage_cols:
+            self.damage_tree.heading(col, text=col, anchor="w")
+            self.damage_tree.column(col, anchor="w", width=col_widths.get(col, 150), minwidth=100)
+        
+        scrollbar_y = ttk.Scrollbar(tree_frame, orient="vertical", command=self.damage_tree.yview)
+        scrollbar_x = ttk.Scrollbar(tree_frame, orient="horizontal", command=self.damage_tree.xview)
+        self.damage_tree.configure(yscrollcommand=scrollbar_y.set, xscrollcommand=scrollbar_x.set)
+        
+        self.damage_tree.grid(row=0, column=0, sticky="nsew", padx=2, pady=2)
+        scrollbar_y.grid(row=0, column=1, sticky="ns", pady=2)
+        scrollbar_x.grid(row=1, column=0, sticky="ew", padx=2)
+        
+        tree_frame.grid_rowconfigure(0, weight=1)
+        tree_frame.grid_columnconfigure(0, weight=1)
+        
+        ctk.CTkButton(self.tab_damage, text="📥 Export to CSV",
+                     command=self.export_damage_report,
+                     fg_color="#8b5cf6", hover_color="#7c3aed",
+                     font=("Inter", RESPONSIVE.get_font_size(14), "bold"),
+                     height=45, width=220, corner_radius=12).pack(pady=20)
+
+    def setup_summary_tab_beautiful(self):
+        """Configuración hermosa para la pestaña de resumen"""
+        
+        # Stats superiores en tarjetas
+        top_stats_frame = ctk.CTkFrame(self.tab_summary, fg_color="transparent")
+        top_stats_frame.pack(fill="x", padx=40, pady=25)
+        
+        # Tarjeta de pérdidas
+        loss_card = ctk.CTkFrame(top_stats_frame, fg_color=REPORT_COLORS["loss_bg"],
+                                corner_radius=20, border_width=2,
+                                border_color=REPORT_COLORS["loss_border"])
+        loss_card.pack(side="left", fill="both", expand=True, padx=15)
+        
+        ctk.CTkLabel(loss_card, text="🔴 Total Losses",
+                    font=("Inter", RESPONSIVE.get_font_size(18), "bold"),
+                    text_color="white").pack(pady=(20, 10))
+        
+        self.summary_loss_label = ctk.CTkLabel(loss_card, text="0",
+                                              font=("Inter", RESPONSIVE.get_font_size(56), "bold"),
+                                              text_color="white")
+        self.summary_loss_label.pack(pady=10)
+        
+        # Tarjeta de daños
+        damage_card = ctk.CTkFrame(top_stats_frame, fg_color=REPORT_COLORS["damage_bg"],
+                                  corner_radius=20, border_width=2,
+                                  border_color=REPORT_COLORS["damage_border"])
+        damage_card.pack(side="left", fill="both", expand=True, padx=15)
+        
+        ctk.CTkLabel(damage_card, text="🟣 Total Damages",
+                    font=("Inter", RESPONSIVE.get_font_size(18), "bold"),
+                    text_color="white").pack(pady=(20, 10))
+        
+        self.summary_damage_label = ctk.CTkLabel(damage_card, text="0",
+                                                font=("Inter", RESPONSIVE.get_font_size(56), "bold"),
+                                                text_color="white")
+        self.summary_damage_label.pack(pady=10)
+        
+        # Tarjeta de total
+        total_card = ctk.CTkFrame(top_stats_frame, fg_color=REPORT_COLORS["summary_bg"],
+                                 corner_radius=20, border_width=2,
+                                 border_color=REPORT_COLORS["summary_border"])
+        total_card.pack(side="left", fill="both", expand=True, padx=15)
+        
+        ctk.CTkLabel(total_card, text="📋 Total Incidents",
+                    font=("Inter", RESPONSIVE.get_font_size(18), "bold"),
+                    text_color="white").pack(pady=(20, 10))
+        
+        self.summary_total_label = ctk.CTkLabel(total_card, text="0",
+                                               font=("Inter", RESPONSIVE.get_font_size(56), "bold"),
+                                               text_color="white")
+        self.summary_total_label.pack(pady=10)
+        
+        # Tarjeta de estadísticas de inventario
+        inv_stats_card = ctk.CTkFrame(self.tab_summary, fg_color=REPORT_COLORS["card_bg"],
+                                     corner_radius=20, border_width=1,
+                                     border_color=REPORT_COLORS["card_border"])
+        inv_stats_card.pack(fill="both", expand=True, padx=40, pady=25)
+        
+        ctk.CTkLabel(inv_stats_card, text="📦 Inventory Statistics by State",
+                    font=("Inter", RESPONSIVE.get_font_size(22), "bold"),
+                    text_color="#38bdf8").pack(pady=(25, 15))
+        
+        self.summary_text = ctk.CTkTextbox(inv_stats_card,
+                                          font=("Inter", RESPONSIVE.get_font_size(14)),
+                                          fg_color=REPORT_COLORS["table_header"],
+                                          border_width=0,
+                                          corner_radius=12,
+                                          text_color=REPORT_COLORS["table_text"])
+        self.summary_text.pack(fill="both", expand=True, padx=25, pady=20)
+
+    # ========================================================================
+    # MODAL DE CONFIGURACIÓN DE PUERTO CON SCROLL
+    # ========================================================================
+    def show_port_config(self):
+        modal = ctk.CTkToplevel(self)
+        modal.title("Serial Port Configuration")
+        
+        modal_width = 550 if not RESPONSIVE.is_laptop else 450
+        modal_height = 500 if not RESPONSIVE.is_laptop else 450
+        modal.geometry(RESPONSIVE.center_modal(self, modal_width, modal_height))
+        modal.minsize(450, 400)
+        
+        modal.grab_set()
+        
+        main_frame = ctk.CTkFrame(modal, fg_color=SLATE_GRAY, corner_radius=15,
+                                 border_width=1, border_color="#334155")
+        main_frame.pack(fill="both", expand=True, padx=20, pady=20)
+        
+        scrollable_frame = ctk.CTkScrollableFrame(main_frame, fg_color="transparent",
+                                                 corner_radius=10)
+        scrollable_frame.pack(fill="both", expand=True, padx=15, pady=15)
+        
+        ctk.CTkLabel(scrollable_frame, text="🔌 Serial Port Configuration",
+                    font=("Inter", RESPONSIVE.get_font_size(20), "bold"),
+                    text_color="#38bdf8").pack(pady=15)
+        
+        current_frame = ctk.CTkFrame(scrollable_frame, fg_color="#0f172a", corner_radius=10)
+        current_frame.pack(fill="x", padx=20, pady=15)
+        
+        if self.scanner.is_connected:
+            status_text = f"✅ Connected: {self.scanner.port_name} @ {self.scanner.baud_rate} baud"
+            status_color = SUCCESS_GREEN
+        else:
+            status_text = "🔴 Not Connected"
+            status_color = "#ef4444"
+        
+        ctk.CTkLabel(current_frame, text="Current Status:",
+                    font=("Inter", 12, "bold"),
+                    text_color="#94a3b8").pack(anchor="w", padx=15, pady=(10, 5))
+        
+        ctk.CTkLabel(current_frame, text=status_text,
+                    font=("Inter", 14, "bold"),
+                    text_color=status_color,
+                    wraplength=400).pack(anchor="w", padx=15, pady=(0, 10))
+        
+        ctk.CTkLabel(scrollable_frame, text="Available Ports:",
+                    font=("Inter", 12, "bold"),
+                    text_color="#94a3b8").pack(anchor="w", padx=20, pady=(15, 5))
+        
+        ports = self.scanner.find_ports()
+        
+        if not ports:
+            ctk.CTkLabel(scrollable_frame, text="⚠️ No serial ports found",
+                        font=("Inter", 12),
+                        text_color="#f59e0b",
+                        wraplength=400).pack(pady=10)
+        else:
+            port_var = ctk.StringVar(value=ports[0])
+            port_frame = ctk.CTkFrame(scrollable_frame, fg_color="transparent")
+            port_frame.pack(fill="x", padx=20)
+            
+            for i, port in enumerate(ports):
+                ctk.CTkRadioButton(port_frame, text=port, variable=port_var, value=port,
+                                 font=("Inter", 13)).pack(anchor="w", pady=3)
+        
+        ctk.CTkLabel(scrollable_frame, text="Baud Rate:",
+                    font=("Inter", 12, "bold"),
+                    text_color="#94a3b8").pack(anchor="w", padx=20, pady=(15, 5))
+        
+        baud_var = ctk.StringVar(value="9600")
+        baud_rates = ["9600", "19200", "38400", "57600", "115200"]
+        
+        baud_frame = ctk.CTkFrame(scrollable_frame, fg_color="transparent")
+        baud_frame.pack(fill="x", padx=20)
+        
+        for i, baud in enumerate(baud_rates):
+            ctk.CTkRadioButton(baud_frame, text=baud, variable=baud_var, value=baud,
+                             font=("Inter", 12)).grid(row=i//3, column=i%3, padx=10, pady=3)
+        
+        btn_height = 40 if not RESPONSIVE.is_laptop else 35
+        btn_width = 130 if not RESPONSIVE.is_laptop else 110
+        
+        def connect_selected():
+            if ports:
+                port = port_var.get()
+                baud = int(baud_var.get())
+                
+                if self.scanner.is_connected:
+                    self.scanner.disconnect()
+                
+                if self.scanner.connect(port, baud):
+                    self.update_scanner_status(True, port)
+                    self.show_message("✅ Connected",
+                                    f"Connected to {port} @ {baud} baud",
+                                    "success")
+                    modal.destroy()
+                else:
+                    self.show_message("❌ Connection Error",
+                                    f"Could not connect to {port}",
+                                    "error")
+            else:
+                self.show_message("⚠️ No Ports", "No serial ports available", "warning")
+        
+        btn_frame = ctk.CTkFrame(scrollable_frame, fg_color="transparent")
+        btn_frame.pack(pady=20)
+        
+        ctk.CTkButton(btn_frame, text="✅ Connect", command=connect_selected,
+                     fg_color="#38bdf8", hover_color="#0ea5e9",
+                     font=("Inter", RESPONSIVE.get_font_size(14), "bold"),
+                     width=btn_width, height=btn_height, corner_radius=10).pack(side="left", padx=10)
+        
+        ctk.CTkButton(btn_frame, text="Close", command=modal.destroy,
+                     fg_color="#475569", hover_color="#64748b",
+                     font=("Inter", RESPONSIVE.get_font_size(13)),
+                     width=btn_width-30, height=btn_height, corner_radius=10).pack(side="left", padx=10)
+
+    def toggle_scanner(self, panel):
+        if not self.scanner.is_connected:
+            self.show_port_config()
+        else:
+            if self.scanner_active:
+                self.scanner.disable_auto_scan()
+                self.scanner_active = False
+                self.update_scanner_buttons_state()
+                self.show_message("⏹️ Scanner Stopped",
+                                "Scanner has been deactivated",
+                                "info")
+            else:
+                self.scanner.enable_auto_scan(panel)
+                self.scanner_active = True
+                self.update_scanner_buttons_state()
+                self.show_message("📡 Scanner Active",
+                                f"Scanning on panel: {panel.upper()}\n\nPoint the scanner now",
+                                "success")
+
+    def update_scanner_buttons_state(self):
+        if self.scanner_active:
+            btn_text = "⏹️ Stop Scanner"
+            btn_color = "#ef4444"
+            hover_color = "#dc2626"
+        else:
+            btn_text = "📡 Activate Scanner"
+            btn_color = "#3b82f6"
+            hover_color = "#2563eb"
+        
+        for panel_name in ['nueva', 'ingreso', 'asignacion', 'perdida']:
+            btn_attr = f"btn_scan_{panel_name}"
+            if hasattr(self, btn_attr):
+                btn = getattr(self, btn_attr)
+                btn.configure(text=btn_text, fg_color=btn_color, hover_color=hover_color)
+
+    def update_scanner_status(self, connected, port_name=""):
+        if connected:
+            self.status_dot.configure(text="🟢")
+            self.status_label.configure(text=f"Connected\n{port_name}",
+                                       text_color=SUCCESS_GREEN)
+            self.btn_config_port.configure(text="🔌 Disconnect",
+                                          command=self.disconnect_scanner,
+                                          fg_color="#ef4444",
+                                          hover_color="#dc2626")
+        else:
+            self.status_dot.configure(text="🔴")
+            self.status_label.configure(text="Disconnected", text_color="#ef4444")
+            self.btn_config_port.configure(text="🔌 Configure",
+                                          command=self.show_port_config,
+                                          fg_color="#475569",
+                                          hover_color="#64748b")
+            self.scanner_active = False
+            self.update_scanner_buttons_state()
+
+    def disconnect_scanner(self):
+        if self.scanner.is_connected:
+            self.scanner.disconnect()
+            self.update_scanner_status(False)
+            self.show_message("🔌 Disconnected", "Scanner disconnected", "info")
+
+    # ========================================================================
+    # MODAL CON SCROLL PARA VER DETALLES COMPLETOS CON HISTORIAL
+    # ========================================================================
+    def show_item_details(self):
+        selected = self.inv_tree.selection()
+        if not selected:
+            self.show_message("⚠️ Select Item", "Please select a yubikey from the table", "warning")
+            return
+        
+        item = self.inv_tree.item(selected[0])
+        serial = item['values'][0]
+        
+        yubi_data = self.find_yubikey(serial)
+        if not yubi_data:
+            return
+        
+        modal = ctk.CTkToplevel(self)
+        modal.title(f"📱 Details - {serial}")
+        
+        modal_width = 800 if not RESPONSIVE.is_laptop else 650
+        modal_height = 650 if not RESPONSIVE.is_laptop else 550
+        modal.geometry(RESPONSIVE.center_modal(self, modal_width, modal_height))
+        modal.minsize(600, 500)
+        
+        modal.grab_set()
+        
+        main_frame = ctk.CTkFrame(modal, fg_color=SLATE_GRAY, corner_radius=18,
+                                 border_width=1, border_color="#334155")
+        main_frame.pack(padx=20, pady=20, fill="both", expand=True)
+        
+        scrollable_frame = ctk.CTkScrollableFrame(main_frame, fg_color="transparent",
+                                                 corner_radius=10)
+        scrollable_frame.pack(fill="both", expand=True, padx=15, pady=15)
+        
+        ctk.CTkLabel(scrollable_frame, text=f"📱 {serial}",
+                    font=("Inter", RESPONSIVE.get_font_size(28), "bold"),
+                    text_color="#38bdf8").pack(pady=15)
+        
+        info_card = ctk.CTkFrame(scrollable_frame, fg_color="#0f172a", corner_radius=12,
+                                border_width=2, border_color=ESTADO_COLORES.get(yubi_data['estado'], "#64748b"))
+        info_card.pack(fill="x", padx=20, pady=15)
+        
+        ctk.CTkLabel(info_card, text="📊 Current Information",
+                    font=("Inter", RESPONSIVE.get_font_size(16), "bold"),
+                    text_color="#38bdf8").pack(pady=(15, 10))
+        
+        info_text = f"""
+        🔹 State: {yubi_data['estado']}
+        🔹 User: {yubi_data.get('usuario', 'N/A') or 'N/A'}
+        🔹 Pipkins Code: {yubi_data.get('codigo_pipkins', 'N/A') or 'N/A'}
+        🔹 Last Connection: {yubi_data.get('ultima_conexion', 'N/A')}
+        🔹 Total History Records: {len(yubi_data.get('historial', []))}
+        """
+        
+        ctk.CTkLabel(info_card, text=info_text,
+                    font=("Inter", RESPONSIVE.get_font_size(13)),
+                    text_color="#e2e8f0",
+                    justify="left").pack(pady=15, padx=20)
+        
+        ctk.CTkLabel(scrollable_frame, text="📜 Complete History Timeline",
+                    font=("Inter", RESPONSIVE.get_font_size(20), "bold"),
+                    text_color="#38bdf8").pack(pady=(20, 15))
+        
+        historial = yubi_data.get('historial', [])
+        
+        if not historial:
+            ctk.CTkLabel(scrollable_frame, text="No history registered",
+                        font=("Inter", 13),
+                        text_color="#94a3b8").pack(pady=20)
+        else:
+            for i, h in enumerate(reversed(historial)):
+                event_card = ctk.CTkFrame(scrollable_frame, fg_color="#1e293b",
+                                         corner_radius=10, border_width=1,
+                                         border_color="#334155")
+                event_card.pack(fill="x", pady=8, padx=20)
+                
+                header_frame = ctk.CTkFrame(event_card, fg_color="transparent")
+                header_frame.pack(fill="x", padx=15, pady=(12, 8))
+                
+                action_icon = self.get_action_icon(h['accion'])
+                ctk.CTkLabel(header_frame, text=f"{action_icon} {h['accion']}",
+                            font=("Inter", RESPONSIVE.get_font_size(14), "bold"),
+                            text_color=ESTADO_COLORES.get(h['estado'], "#38bdf8")).pack(side="left")
+                
+                datetime_text = f"📅 {h['fecha']}  ⏰ {h['hora']}"
+                ctk.CTkLabel(header_frame, text=datetime_text,
+                            font=("Inter", 11),
+                            text_color="#94a3b8").pack(side="right")
+                
+                ctk.CTkFrame(event_card, height=1, fg_color="#334155").pack(fill="x", padx=15, pady=5)
+                
+                details_frame = ctk.CTkFrame(event_card, fg_color="transparent")
+                details_frame.pack(fill="x", padx=15, pady=8)
+                
+                if h.get('usuario'):
+                    ctk.CTkLabel(details_frame, text=f"👤 User: {h['usuario']}",
+                                font=("Inter", 12),
+                                text_color="#cbd5e1").pack(anchor="w", pady=2)
+                
+                if h.get('codigo_pipkins'):
+                    ctk.CTkLabel(details_frame, text=f"🔢 Pipkins: {h['codigo_pipkins']}",
+                                font=("Inter", 12),
+                                text_color="#cbd5e1").pack(anchor="w", pady=2)
+                
+                ctk.CTkLabel(details_frame, text=f"📌 State: {h['estado']}",
+                            font=("Inter", 12, "bold"),
+                            text_color=ESTADO_COLORES.get(h['estado'], "#94a3b8")).pack(anchor="w", pady=5)
+                
+                if h.get('comentario'):
+                    comment_frame = ctk.CTkFrame(event_card, fg_color="#0f172a", corner_radius=8)
+                    comment_frame.pack(fill="x", padx=15, pady=8)
+                    ctk.CTkLabel(comment_frame, text=f"💬 {h['comentario']}",
+                                font=("Inter", 11),
+                                text_color="#fbbf24",
+                                wraplength=550,
+                                justify="left").pack(padx=12, pady=8)
+        
+        ctk.CTkButton(scrollable_frame, text="Close", command=modal.destroy,
+                     fg_color="#475569", hover_color="#64748b",
+                     font=("Inter", RESPONSIVE.get_font_size(14), "bold"),
+                     width=150, height=40, corner_radius=10).pack(pady=20)
+
+    def get_action_icon(self, action):
+        icons = {
+            "Registro": "🆕",
+            "Check-in": "⬇️",
+            "Check-out": "⬆️",
+            "Assign": "👉",
+            "Return": "👈",
+            "Loss": "❌",
+            "Damage": "⚠️",
+            "Break": "☕",
+            "Lunch": "🍽️"
+        }
+        for key, icon in icons.items():
+            if key in action:
+                return icon
+        return "📌"
+
+    def show_current_state_modal(self, serial, usuario, pipkins, estado_actual, action_type,
+                                found_by=None, search_value=None):
+        modal = ctk.CTkToplevel(self)
+        modal.title("Current Status")
+        
+        modal_width = 600 if not RESPONSIVE.is_laptop else 500
+        modal_height = 500 if not RESPONSIVE.is_laptop else 450
+        modal.geometry(RESPONSIVE.center_modal(self, modal_width, modal_height))
+        modal.minsize(450, 400)
+        
+        modal.grab_set()
+        
+        main_frame = ctk.CTkFrame(modal, fg_color=SLATE_GRAY, corner_radius=18,
+                                 border_width=1, border_color="#334155")
+        main_frame.pack(fill="both", expand=True, padx=20, pady=20)
+        
+        scrollable_frame = ctk.CTkScrollableFrame(main_frame, fg_color="transparent",
+                                                 corner_radius=10)
+        scrollable_frame.pack(fill="both", expand=True, padx=15, pady=15)
+        
+        if action_type == 'break_lunch':
+            title_text = "⏸️ Break/Lunch Check-in/out"
+            title_color = "#f59e0b"
+        elif action_type == 'assign_return':
+            title_text = "🔄 Assign/Return Yubikey"
+            title_color = "#8b5cf6"
+        elif action_type == 'loss_damage':
+            title_text = "⚠️ Loss/Damage Report"
+            title_color = "#ef4444"
+        else:
+            title_text = "📱 Current Yubikey Status"
+            title_color = "#38bdf8"
+        
+        ctk.CTkLabel(scrollable_frame, text=title_text,
+                    font=("Inter", RESPONSIVE.get_font_size(22), "bold"),
+                    text_color=title_color).pack(pady=15)
+        
+        info_card = ctk.CTkFrame(scrollable_frame, fg_color="#0f172a", corner_radius=12,
+                                border_width=2, border_color=ESTADO_COLORES.get(estado_actual, "#64748b"))
+        info_card.pack(fill="x", padx=20, pady=20)
+        
+        found_info = ""
+        if found_by and action_type == 'loss_damage':
+            found_info = f"🔍 Found by {found_by}: {search_value}\n\n"
+        
+        info_text = f"""{found_info}Serial: {serial}
+User: {usuario}
+Pipkins: {pipkins}
+
+Current State: {estado_actual.upper()}
+"""
+        
+        ctk.CTkLabel(info_card, text=info_text,
+                    font=("Inter", RESPONSIVE.get_font_size(14)),
+                    text_color="#e2e8f0",
+                    justify="center",
+                    wraplength=400).pack(pady=20)
+        
+        if action_type == 'break_lunch':
+            if estado_actual in ['On Break', 'On Lunch']:
+                msg = f"⚠️ This yubikey is already {estado_actual.upper()}\n\nDo you want to CHECK-OUT (return to In Use)?"
+                btn_text = "✅ Check-Out"
+                btn_color = "#3b82f6"
+            elif estado_actual == 'In Use':
+                msg = "✅ Yubikey is currently IN USE\n\nDo you want to check-in to Break or Lunch?"
+                btn_text = "✅ Proceed to Break/Lunch"
+                btn_color = "#f59e0b"
+            else:
+                msg = f"❌ Cannot perform break/lunch operation\nCurrent state: {estado_actual}\n\nOnly yubikeys IN USE can check-in to break/lunch."
+                btn_text = "Close"
+                btn_color = "#475569"
+            
+            def proceed():
+                modal.destroy()
+                if estado_actual in ['On Break', 'On Lunch']:
+                    self.update_break_lunch_state(serial, 'In Use', check_out=True)
+                elif estado_actual == 'In Use':
+                    self.ask_break_type(serial)
+        
+        elif action_type == 'assign_return':
+            if estado_actual == 'Available':
+                msg = "✅ Yubikey is AVAILABLE\n\nDo you want to ASSIGN to a new user?"
+                btn_text = "✅ Assign to User"
+                btn_color = "#10b981"
+            elif estado_actual in ['In Use', 'On Break', 'On Lunch']:
+                msg = f"⚠️ Yubikey is {estado_actual.upper()}\n\nDo you want to RETURN (mark as available)?"
+                btn_text = "✅ Return Yubikey"
+                btn_color = "#ef4444"
+            elif estado_actual in ['Loss', 'Damage']:
+                msg = f"❌ Cannot assign/return: state is {estado_actual}\n\nThis yubikey is reported as {estado_actual.upper()}."
+                btn_text = "Close"
+                btn_color = "#475569"
+            else:
+                msg = f"⚠️ Unexpected state: {estado_actual}"
+                btn_text = "Close"
+                btn_color = "#475569"
+            
+            def proceed():
+                modal.destroy()
+                if estado_actual == 'Available':
+                    self.ask_nuevo_usuario_pipkins(serial)
+                elif estado_actual in ['In Use', 'On Break', 'On Lunch']:
+                    self.ask_return_comment(serial)
+        
+        elif action_type == 'loss_damage':
+            if estado_actual in ['Loss', 'Damage']:
+                msg = f"⚠️ Already in state '{estado_actual}'\n\nThis yubikey is already reported as {estado_actual.upper()}."
+                btn_text = "Close"
+                btn_color = "#475569"
+            else:
+                msg = "⚠️ Report incident for this yubikey\n\nSelect the incident type:"
+                btn_text = "Continue"
+                btn_color = "#ef4444"
+            
+            def proceed():
+                modal.destroy()
+                if estado_actual not in ['Loss', 'Damage']:
+                    self.ask_loss_damage_type(serial, found_by, search_value)
+        
+        else:
+            msg = f"📌 Current state: {estado_actual}"
+            btn_text = "Close"
+            btn_color = "#475569"
+            
+            def proceed():
+                modal.destroy()
+        
+        ctk.CTkLabel(scrollable_frame, text=msg,
+                    font=("Inter", RESPONSIVE.get_font_size(13)),
+                    text_color="#94a3b8",
+                    justify="center",
+                    wraplength=450).pack(pady=15)
+        
+        if btn_text != "Close" or action_type != 'break_lunch':
+            ctk.CTkButton(scrollable_frame, text=btn_text, command=proceed,
+                         fg_color=btn_color,
+                         hover_color="#dc2626" if btn_color == "#ef4444" else
+                                   "#059669" if btn_color == "#10b981" else
+                                   "#d97706" if btn_color == "#f59e0b" else
+                                   "#2563eb" if btn_color == "#3b82f6" else "#64748b",
+                         font=("Inter", RESPONSIVE.get_font_size(15), "bold"),
+                         width=250, height=45, corner_radius=10).pack(pady=20)
+        
+        ctk.CTkButton(scrollable_frame, text="Cancel", command=modal.destroy,
+                     fg_color="#475569", hover_color="#64748b",
+                     font=("Inter", RESPONSIVE.get_font_size(14)),
+                     width=120, height=40, corner_radius=10).pack(pady=10)
+
+    def setup_nueva_panel(self):
+        header_frame = ctk.CTkFrame(self.panel_nueva, fg_color="transparent")
+        header_frame.pack(fill="x", padx=40, pady=(20, 10))
+        
+        ctk.CTkLabel(header_frame, text="📝 Register New Yubikey",
+                    font=("Inter", RESPONSIVE.get_font_size(28), "bold"),
+                    text_color="#38bdf8").pack()
+        
+        ctk.CTkLabel(header_frame, text="Scan or manually enter the yubikey serial number",
+                    font=("Inter", 13),
+                    text_color="#94a3b8").pack(pady=5)
+        
+        input_card = ctk.CTkFrame(self.panel_nueva, fg_color=SLATE_GRAY,
+                                 corner_radius=15, border_width=1,
+                                 border_color="#334155")
+        input_card.pack(fill="x", padx=40, pady=20)
+        
+        input_frame = ctk.CTkFrame(input_card, fg_color="transparent")
+        input_frame.pack(fill="x", padx=30, pady=25)
+        
+        ctk.CTkLabel(input_frame, text="Yubikey Serial:",
+                    font=("Inter", RESPONSIVE.get_font_size(16), "bold"),
+                    text_color="#e2e8f0").pack(anchor="w", pady=(0, 10))
+        
+        self.entry_nueva = ctk.CTkEntry(input_frame,
+                                       placeholder_text="Type serial or use scanner...",
+                                       width=RESPONSIVE.get_entry_width(),
+                                       height=50,
+                                       font=("Inter", RESPONSIVE.get_font_size(16)),
+                                       border_width=2,
+                                       border_color=BORDER_DEFAULT,
+                                       corner_radius=10)
+        self.entry_nueva.pack(fill="x", pady=10)
+        self.entry_nueva.bind("<Return>", lambda e: self.on_register_submit())
+        
+        self.btn_scan_nueva = ctk.CTkButton(input_frame,
+                                           text="📡 Activate Scanner",
+                                           command=lambda: self.toggle_scanner('nueva'),
+                                           fg_color="#3b82f6",
+                                           hover_color="#2563eb",
+                                           font=("Inter", RESPONSIVE.get_font_size(14), "bold"),
+                                           height=45,
+                                           corner_radius=10)
+        self.btn_scan_nueva.pack(fill="x", pady=15)
+        
+        self.label_nueva = ctk.CTkLabel(input_card, text="",
+                                       font=("Inter", RESPONSIVE.get_font_size(14), "bold"))
+        self.label_nueva.pack(pady=15)
+        
+        self.setup_recent_table_responsive(self.panel_nueva, 'nueva')
+
+    def on_register_submit(self):
+        serial = self.entry_nueva.get().strip().upper()
+        if not serial:
+            self.label_nueva.configure(text="⚠️ Empty field", text_color="#f59e0b")
+            return
+        
+        if self.serial_exists(serial):
+            self.label_nueva.configure(text="⚠️ Serial already registered", text_color="#f59e0b")
+            return
+        
+        self.ask_user_and_pipkins(serial)
+
+    def setup_ingreso_panel(self):
+        header_frame = ctk.CTkFrame(self.panel_ingreso, fg_color="transparent")
+        header_frame.pack(fill="x", padx=40, pady=(20, 10))
+        
+        ctk.CTkLabel(header_frame, text="⏸️ Break / Lunch Check-in/out",
+                    font=("Inter", RESPONSIVE.get_font_size(28), "bold"),
+                    text_color="#f59e0b").pack()
+        
+        ctk.CTkLabel(header_frame, text="Only for yubikeys currently IN USE",
+                    font=("Inter", 13),
+                    text_color="#94a3b8").pack(pady=5)
+        
+        input_card = ctk.CTkFrame(self.panel_ingreso, fg_color=SLATE_GRAY,
+                                 corner_radius=15, border_width=1,
+                                 border_color="#334155")
+        input_card.pack(fill="x", padx=40, pady=20)
+        
+        input_frame = ctk.CTkFrame(input_card, fg_color="transparent")
+        input_frame.pack(fill="x", padx=30, pady=25)
+        
+        ctk.CTkLabel(input_frame, text="Yubikey Serial:",
+                    font=("Inter", RESPONSIVE.get_font_size(16), "bold"),
+                    text_color="#e2e8f0").pack(anchor="w", pady=(0, 10))
+        
+        self.entry_ingreso = ctk.CTkEntry(input_frame,
+                                         placeholder_text="Type serial or use scanner...",
+                                         width=RESPONSIVE.get_entry_width(),
+                                         height=50,
+                                         font=("Inter", RESPONSIVE.get_font_size(16)),
+                                         border_width=2,
+                                         border_color=BORDER_DEFAULT,
+                                         corner_radius=10)
+        self.entry_ingreso.pack(fill="x", pady=10)
+        self.entry_ingreso.bind("<Return>", lambda e: self.process_break_lunch_scan())
+        
+        self.btn_scan_ingreso = ctk.CTkButton(input_frame,
+                                             text="📡 Activate Scanner",
+                                             command=lambda: self.toggle_scanner('ingreso'),
+                                             fg_color="#3b82f6",
+                                             hover_color="#2563eb",
+                                             font=("Inter", RESPONSIVE.get_font_size(14), "bold"),
+                                             height=45,
+                                             corner_radius=10)
+        self.btn_scan_ingreso.pack(fill="x", pady=15)
+        
+        self.label_ingreso = ctk.CTkLabel(input_card, text="",
+                                         font=("Inter", RESPONSIVE.get_font_size(14), "bold"))
+        self.label_ingreso.pack(pady=15)
+        
+        self.setup_recent_table_responsive(self.panel_ingreso, 'ingreso')
+
+    def process_break_lunch_scan(self):
+        serial = self.entry_ingreso.get().strip().upper()
+        if not serial:
+            self.label_ingreso.configure(text="⚠️ Empty field", text_color="#f59e0b")
+            return
+        
+        item_data = self.find_yubikey(serial)
+        if not item_data:
+            self.label_ingreso.configure(text="❌ Serial not found", text_color="#ef4444")
+            self.after(3000, lambda: self.label_ingreso.configure(text=""))
+            return
+        
+        estado_actual = item_data['estado']
+        usuario = item_data.get('usuario', 'N/A') or 'N/A'
+        pipkins = item_data.get('codigo_pipkins', 'N/A') or 'N/A'
+        
+        self.show_current_state_modal(serial, usuario, pipkins, estado_actual, 'break_lunch')
+
+    def update_break_lunch_state(self, serial, tipo_break, check_out=False):
+        with open(JSON_FILE, 'r', encoding='utf-8') as f:
+            datos = json.load(f)
+        
+        for item in datos:
+            if item['serial'].upper() == serial.upper():
+                now = datetime.now()
+                if check_out:
+                    item['estado'] = 'In Use'
+                    accion = 'Check-out from Break/Lunch'
+                else:
+                    item['estado'] = f'On {tipo_break}'
+                    accion = f'Check-in to {tipo_break}'
+                
+                item['ultima_conexion'] = now.strftime("%Y-%m-%d")
+                item['historial'].append({
+                    'accion': accion,
+                    'fecha': now.strftime("%Y-%m-%d"),
+                    'hora': now.strftime("%H:%M:%S"),
+                    'estado': item['estado'],
+                    'usuario': item.get('usuario', ''),
+                    'codigo_pipkins': item.get('codigo_pipkins', ''),
+                    'comentario': accion
+                })
+                break
+        
+        with open(JSON_FILE, 'w', encoding='utf-8') as f:
+            json.dump(datos, f, indent=4, ensure_ascii=False)
+        
+        if check_out:
+            msg = f"✅ Checked-out - Back to In Use"
+        else:
+            msg = f"✅ Check-in to {tipo_break}"
+        
+        self.label_ingreso.configure(text=msg,
+                                    text_color=SUCCESS_GREEN,
+                                    font=("Inter", RESPONSIVE.get_font_size(14), "bold"))
+        self.entry_ingreso.delete(0, 'end')
+        self.load_recent_data('ingreso')
+        self.after(3000, lambda: self.label_ingreso.configure(text=""))
+
+    def ask_break_type(self, serial):
+        modal = ctk.CTkToplevel(self)
+        modal.title("Select Break Type")
+        
+        modal_width = 450 if not RESPONSIVE.is_laptop else 380
+        modal_height = 320 if not RESPONSIVE.is_laptop else 280
+        modal.geometry(RESPONSIVE.center_modal(self, modal_width, modal_height))
+        modal.minsize(350, 260)
+        
+        modal.grab_set()
+        
+        main_frame = ctk.CTkFrame(modal, fg_color=SLATE_GRAY, corner_radius=18,
+                                 border_width=1, border_color="#334155")
+        main_frame.pack(fill="both", expand=True, padx=20, pady=20)
+        
+        scrollable_frame = ctk.CTkScrollableFrame(main_frame, fg_color="transparent",
+                                                 corner_radius=10)
+        scrollable_frame.pack(fill="both", expand=True, padx=15, pady=15)
+        
+        ctk.CTkLabel(scrollable_frame, text="⏸️ Change state to?",
+                    font=("Inter", RESPONSIVE.get_font_size(20), "bold"),
+                    text_color="#38bdf8").pack(pady=20)
+        
+        tipo_var = ctk.StringVar(value="Break")
+        
+        options_frame = ctk.CTkFrame(scrollable_frame, fg_color=SLATE_GRAY,
+                                    corner_radius=12, border_width=1,
+                                    border_color="#334155")
+        options_frame.pack(fill="x", padx=20, pady=15)
+        
+        ctk.CTkRadioButton(options_frame, text="⏸️ Break", variable=tipo_var, value="Break",
+                         font=("Inter", RESPONSIVE.get_font_size(16)),
+                         fg_color="#f59e0b").pack(anchor="w", padx=25, pady=12)
+        ctk.CTkRadioButton(options_frame, text="🍽️ Lunch", variable=tipo_var, value="Lunch",
+                         font=("Inter", RESPONSIVE.get_font_size(16)),
+                         fg_color="#f97316").pack(anchor="w", padx=25, pady=12)
+        
+        def confirmar():
+            tipo = tipo_var.get()
+            self.update_break_lunch_state(serial, tipo)
+            modal.destroy()
+        
+        btn_frame = ctk.CTkFrame(scrollable_frame, fg_color="transparent")
+        btn_frame.pack(pady=20)
+        
+        ctk.CTkButton(btn_frame, text="✅ Confirm", command=confirmar,
+                     fg_color="#38bdf8", hover_color="#0ea5e9",
+                     font=("Inter", RESPONSIVE.get_font_size(15), "bold"),
+                     width=150, height=40, corner_radius=10).pack(side="left", padx=10)
+        ctk.CTkButton(btn_frame, text="Cancel", command=modal.destroy,
+                     fg_color="#475569", hover_color="#64748b",
+                     font=("Inter", RESPONSIVE.get_font_size(14)),
+                     width=120, height=40, corner_radius=10).pack(side="left", padx=10)
+
+    def setup_asignacion_panel(self):
+        header_frame = ctk.CTkFrame(self.panel_asignacion, fg_color="transparent")
+        header_frame.pack(fill="x", padx=40, pady=(20, 10))
+        
+        ctk.CTkLabel(header_frame, text="🔄 Assign / Return",
+                    font=("Inter", RESPONSIVE.get_font_size(28), "bold"),
+                    text_color="#8b5cf6").pack()
+        
+        ctk.CTkLabel(header_frame, text="Assign available yubikeys or return in-use ones",
+                    font=("Inter", 13),
+                    text_color="#94a3b8").pack(pady=5)
+        
+        input_card = ctk.CTkFrame(self.panel_asignacion, fg_color=SLATE_GRAY,
+                                 corner_radius=15, border_width=1,
+                                 border_color="#334155")
+        input_card.pack(fill="x", padx=40, pady=20)
+        
+        input_frame = ctk.CTkFrame(input_card, fg_color="transparent")
+        input_frame.pack(fill="x", padx=30, pady=25)
+        
+        ctk.CTkLabel(input_frame, text="Yubikey Serial:",
+                    font=("Inter", RESPONSIVE.get_font_size(16), "bold"),
+                    text_color="#e2e8f0").pack(anchor="w", pady=(0, 10))
+        
+        self.entry_asignacion = ctk.CTkEntry(input_frame,
+                                            placeholder_text="Type serial or use scanner...",
+                                            width=RESPONSIVE.get_entry_width(),
+                                            height=50,
+                                            font=("Inter", RESPONSIVE.get_font_size(16)),
+                                            border_width=2,
+                                            border_color=BORDER_DEFAULT,
+                                            corner_radius=10)
+        self.entry_asignacion.pack(fill="x", pady=10)
+        self.entry_asignacion.bind("<Return>", lambda e: self.process_assign_return_scan())
+        
+        self.btn_scan_asignacion = ctk.CTkButton(input_frame,
+                                                text="📡 Activate Scanner",
+                                                command=lambda: self.toggle_scanner('asignacion'),
+                                                fg_color="#3b82f6",
+                                                hover_color="#2563eb",
+                                                font=("Inter", RESPONSIVE.get_font_size(14), "bold"),
+                                                height=45,
+                                                corner_radius=10)
+        self.btn_scan_asignacion.pack(fill="x", pady=15)
+        
+        self.label_asignacion = ctk.CTkLabel(input_card, text="",
+                                            font=("Inter", RESPONSIVE.get_font_size(14), "bold"))
+        self.label_asignacion.pack(pady=15)
+        
+        self.setup_recent_table_responsive(self.panel_asignacion, 'asignacion')
+
+    def process_assign_return_scan(self):
+        serial = self.entry_asignacion.get().strip().upper()
+        if not serial:
+            self.label_asignacion.configure(text="⚠️ Empty field", text_color="#f59e0b")
+            return
+        
+        item_data = self.find_yubikey(serial)
+        if not item_data:
+            self.label_asignacion.configure(text="❌ Serial not found", text_color="#ef4444")
+            self.after(3000, lambda: self.label_asignacion.configure(text=""))
+            return
+        
+        estado_actual = item_data['estado']
+        usuario = item_data.get('usuario', 'N/A') or 'N/A'
+        pipkins = item_data.get('codigo_pipkins', 'N/A') or 'N/A'
+        
+        self.show_current_state_modal(serial, usuario, pipkins, estado_actual, 'assign_return')
+
+    def setup_perdida_panel(self):
+        header_frame = ctk.CTkFrame(self.panel_perdida, fg_color="transparent")
+        header_frame.pack(fill="x", padx=40, pady=(20, 10))
+        
+        ctk.CTkLabel(header_frame, text="⚠️ Loss / Damage Report",
+                    font=("Inter", RESPONSIVE.get_font_size(28), "bold"),
+                    text_color="#ef4444").pack()
+        
+        ctk.CTkLabel(header_frame, text="Report lost or damaged yubikeys",
+                    font=("Inter", 13),
+                    text_color="#94a3b8").pack(pady=5)
+        
+        input_card = ctk.CTkFrame(self.panel_perdida, fg_color=SLATE_GRAY,
+                                 corner_radius=15, border_width=1,
+                                 border_color="#334155")
+        input_card.pack(fill="x", padx=40, pady=20)
+        
+        input_frame = ctk.CTkFrame(input_card, fg_color="transparent")
+        input_frame.pack(fill="x", padx=30, pady=25)
+        
+        ctk.CTkLabel(input_frame, text="Yubikey Serial OR Pipkins Code:",
+                    font=("Inter", RESPONSIVE.get_font_size(16), "bold"),
+                    text_color="#e2e8f0").pack(anchor="w", pady=(0, 10))
+        
+        ctk.CTkLabel(input_frame, text="💡 Tip: Enter serial OR Pipkins code, then press Enter",
+                    font=("Inter", 11),
+                    text_color="#94a3b8").pack(anchor="w", pady=(0, 15))
+        
+        self.entry_perdida = ctk.CTkEntry(input_frame,
+                                         placeholder_text="Type serial or Pipkins code...",
+                                         width=RESPONSIVE.get_entry_width(),
+                                         height=50,
+                                         font=("Inter", RESPONSIVE.get_font_size(16)),
+                                         border_width=2,
+                                         border_color=BORDER_DEFAULT,
+                                         corner_radius=10)
+        self.entry_perdida.pack(fill="x", pady=10)
+        self.entry_perdida.bind("<Return>", lambda e: self.process_loss_damage_scan())
+        
+        self.btn_scan_perdida = ctk.CTkButton(input_frame,
+                                             text="📡 Activate Scanner",
+                                             command=lambda: self.toggle_scanner('perdida'),
+                                             fg_color="#3b82f6",
+                                             hover_color="#2563eb",
+                                             font=("Inter", RESPONSIVE.get_font_size(14), "bold"),
+                                             height=45,
+                                             corner_radius=10)
+        self.btn_scan_perdida.pack(fill="x", pady=15)
+        
+        self.label_perdida = ctk.CTkLabel(input_card, text="",
+                                         font=("Inter", RESPONSIVE.get_font_size(14), "bold"))
+        self.label_perdida.pack(pady=15)
+        
+        self.setup_recent_table_responsive(self.panel_perdida, 'perdida')
+
+    def process_loss_damage_scan(self):
+        search_value = self.entry_perdida.get().strip().upper()
+        if not search_value:
+            self.label_perdida.configure(text="⚠️ Empty field", text_color="#f59e0b")
+            return
+        
+        item_data = self.find_yubikey(search_value)
+        
+        if not item_data:
+            item_data = self.find_by_pipkins(search_value)
+            search_method = "Pipkins code"
+        else:
+            search_method = "Serial"
+        
+        if not item_data:
+            self.label_perdida.configure(text="❌ Serial or Pipkins not found", text_color="#ef4444")
+            self.after(3000, lambda: self.label_perdida.configure(text=""))
+            return
+        
+        estado_actual = item_data['estado']
+        serial = item_data['serial']
+        usuario = item_data.get('usuario', 'N/A') or 'N/A'
+        pipkins = item_data.get('codigo_pipkins', 'N/A') or 'N/A'
+        
+        self.show_current_state_modal(serial, usuario, pipkins, estado_actual, 'loss_damage',
+                                     found_by=search_method, search_value=search_value)
+
+    def find_by_pipkins(self, pipkins_code):
+        if not os.path.isfile(JSON_FILE):
+            return None
+        with open(JSON_FILE, 'r', encoding='utf-8') as f:
+            datos = json.load(f)
+        for item in datos:
+            if item.get('codigo_pipkins', '').upper() == pipkins_code.upper():
+                return item
+        return None
+
+    def find_yubikey(self, serial):
+        if not os.path.isfile(JSON_FILE):
+            return None
+        with open(JSON_FILE, 'r', encoding='utf-8') as f:
+            datos = json.load(f)
+        for item in datos:
+            if item['serial'].upper() == serial.upper():
+                return item
+        return None
+
+    def serial_exists(self, serial):
+        return self.find_yubikey(serial) is not None
+
+    def show_message(self, title, message, type="info"):
+        modal = ctk.CTkToplevel(self)
+        modal.title(title)
+        
+        modal_width = 500 if not RESPONSIVE.is_laptop else 400
+        modal_height = 280 if not RESPONSIVE.is_laptop else 240
+        modal.geometry(RESPONSIVE.center_modal(self, modal_width, modal_height))
+        modal.minsize(350, 220)
+        
+        modal.grab_set()
+        
+        if type == "info":
+            color = "#38bdf8"
+            icon = "ℹ️"
+        elif type == "error":
+            color = "#ef4444"
+            icon = "❌"
+        elif type == "warning":
+            color = "#f59e0b"
+            icon = "⚠️"
+        else:
+            color = SUCCESS_GREEN
+            icon = "✅"
+        
+        main_frame = ctk.CTkFrame(modal, fg_color=SLATE_GRAY, corner_radius=15,
+                                 border_width=1, border_color="#334155")
+        main_frame.pack(fill="both", expand=True, padx=20, pady=20)
+        
+        scrollable_frame = ctk.CTkScrollableFrame(main_frame, fg_color="transparent",
+                                                 corner_radius=10)
+        scrollable_frame.pack(fill="both", expand=True, padx=15, pady=15)
+        
+        ctk.CTkLabel(scrollable_frame, text=f"{icon} {message}",
+                    font=("Inter", RESPONSIVE.get_font_size(14)),
+                    text_color=color,
+                    wraplength=350,
+                    justify="center").pack(pady=30)
+        
+        ctk.CTkButton(scrollable_frame, text="OK", command=modal.destroy,
+                     fg_color="#475569", hover_color="#64748b",
+                     font=("Inter", RESPONSIVE.get_font_size(14)),
+                     width=120, height=38, corner_radius=10).pack(pady=15)
+
+    def load_recent_data(self, tipo):
+        tree = getattr(self, f"tree_recent_{tipo}", None)
+        if not tree:
+            return
+        tree.delete(*tree.get_children())
+        movimientos = self.get_recent_movements(tipo)
+        for mov in movimientos:
+            tree.insert('', 'end', values=mov)
+
+    def get_recent_movements(self, tipo):
+        if not os.path.isfile(JSON_FILE):
+            return []
+        with open(JSON_FILE, 'r', encoding='utf-8') as f:
+            datos = json.load(f)
+        movs = []
+        for item in datos:
+            codigo = item.get('codigo_pipkins', '-')
+            for h in item.get('historial', []):
+                if tipo == 'nueva' and h['accion'] == 'Registro':
+                    movs.append((item['serial'], codigo, h['accion'], h['fecha'], h['hora']))
+                elif tipo == 'ingreso' and ('Break' in h['accion'] or 'Lunch' in h['accion']):
+                    movs.append((item['serial'], codigo, h['accion'], h['fecha'], h['hora']))
+                elif tipo == 'asignacion' and ('Assign' in h['accion'] or 'Return' in h['accion']):
+                    movs.append((item['serial'], codigo, h['accion'], h['fecha'], h['hora']))
+                elif tipo == 'perdida' and h['accion'] in ['Loss', 'Damage']:
+                    movs.append((item['serial'], codigo, h['accion'], h['fecha'], h['hora']))
+        return sorted(movs, key=lambda x: (x[3], x[4]), reverse=True)[:5]
 
     def initialize_database(self):
         if not os.path.exists(JSON_FILE):
@@ -127,43 +1597,21 @@ class YubiDash(ctk.CTk):
                 datos = json.load(f)
             
             migrated = False
+            state_map = {
+                'Disponible': 'Available', 'En Uso': 'In Use',
+                'En Break': 'On Break', 'En Lunch': 'On Lunch',
+                'Pérdida': 'Loss', 'Perdida': 'Loss',
+                'Daño': 'Damage', 'Dano': 'Damage'
+            }
             
             for item in datos:
                 if 'codigo_pickiks' in item:
                     item['codigo_pipkins'] = item.pop('codigo_pickiks')
                     migrated = True
                 
-                state_map = {
-                    'Disponible': 'Available',
-                    'En Uso': 'In Use',
-                    'En Break': 'On Break',
-                    'En Lunch': 'On Lunch',
-                    'Pérdida': 'Loss',
-                    'Perdida': 'Loss',
-                    'Daño': 'Damage',
-                    'Dano': 'Damage'
-                }
-                
                 if item.get('estado') in state_map:
                     item['estado'] = state_map[item['estado']]
                     migrated = True
-                
-                if 'historial' in item:
-                    for h in item['historial']:
-                        if 'codigo_pickiks' in h:
-                            h['codigo_pipkins'] = h.pop('codigo_pickiks')
-                            migrated = True
-                        
-                        if h.get('estado') in state_map:
-                            h['estado'] = state_map[h['estado']]
-                            migrated = True
-                        
-                        if 'usuario' not in h:
-                            h['usuario'] = item.get('usuario', '')
-                        if 'codigo_pipkins' not in h:
-                            h['codigo_pipkins'] = item.get('codigo_pipkins', '')
-                        if 'comentario' not in h:
-                            h['comentario'] = ''
                 
                 if 'historial' not in item:
                     item['historial'] = []
@@ -176,846 +1624,37 @@ class YubiDash(ctk.CTk):
 
     def show_nueva_panel(self):
         self.hide_all_panels()
-        self.panel_nueva.pack(fill="both", expand=True, padx=20, pady=20)
+        self.current_panel_name = 'nueva'
+        self.panel_nueva.pack(fill="both", expand=True)
 
     def show_ingreso_panel(self):
         self.hide_all_panels()
-        self.panel_ingreso.pack(fill="both", expand=True, padx=20, pady=20)
+        self.current_panel_name = 'ingreso'
+        self.panel_ingreso.pack(fill="both", expand=True)
 
     def show_asignacion_panel(self):
         self.hide_all_panels()
-        self.panel_asignacion.pack(fill="both", expand=True, padx=20, pady=20)
+        self.current_panel_name = 'asignacion'
+        self.panel_asignacion.pack(fill="both", expand=True)
 
     def show_perdida_panel(self):
         self.hide_all_panels()
-        self.panel_perdida.pack(fill="both", expand=True, padx=20, pady=20)
+        self.current_panel_name = 'perdida'
+        self.panel_perdida.pack(fill="both", expand=True)
 
     def show_inv_view(self):
         self.hide_all_panels()
-        self.view_inv.pack(fill="both", expand=True, padx=20, pady=20)
+        self.current_panel_name = 'inventory'
+        self.view_inv.pack(fill="both", expand=True)
         self.load_inventory_table()
 
     def show_report_view(self):
         self.hide_all_panels()
-        self.view_report.pack(fill="both", expand=True, padx=20, pady=20)
+        self.current_panel_name = 'reports'
+        self.view_report.pack(fill="both", expand=True)
         self.load_reports()
 
-    def hide_all_panels(self):
-        for panel in [self.panel_nueva, self.panel_ingreso, self.panel_asignacion, 
-                      self.panel_perdida, self.view_inv, self.view_report]:
-            panel.pack_forget()
-
-    def setup_nueva_panel(self):
-        ctk.CTkLabel(self.panel_nueva, text="Register New Yubikey", 
-                    font=("Inter", 22, "bold")).pack(pady=30)
-        
-        self.entry_nueva = ctk.CTkEntry(self.panel_nueva, 
-                                        placeholder_text="Scan new serial", 
-                                        width=300, height=40, 
-                                        font=("Inter", 16), 
-                                        border_width=3, 
-                                        border_color=BORDER_DEFAULT, 
-                                        corner_radius=15)
-        self.entry_nueva.pack(pady=10)
-        self.entry_nueva.bind("<Return>", self.registrar_nueva_yubikey)
-        
-        self.label_nueva = ctk.CTkLabel(self.panel_nueva, text="", 
-                                        text_color="red", 
-                                        font=("Inter", 13, "bold"))
-        self.label_nueva.pack(pady=5)
-        
-        self.setup_recent_table(self.panel_nueva, 'nueva')
-
-    def setup_ingreso_panel(self):
-        ctk.CTkLabel(self.panel_ingreso, text="Break / Lunch Check-in/out", 
-                    font=("Inter", 22, "bold")).pack(pady=30)
-        
-        ctk.CTkLabel(self.panel_ingreso, text="Only for yubikeys IN USE", 
-                    font=("Inter", 13), text_color="#94a3b8").pack(pady=(0, 20))
-        
-        self.entry_ingreso = ctk.CTkEntry(self.panel_ingreso, 
-                                          placeholder_text="Scan for Check-in/out", 
-                                          width=300, height=40, 
-                                          font=("Inter", 16), 
-                                          border_width=3, 
-                                          border_color=BORDER_DEFAULT, 
-                                          corner_radius=15)
-        self.entry_ingreso.pack(pady=10)
-        self.entry_ingreso.bind("<Return>", lambda e: self.process_session_scan('ingreso_salida'))
-        
-        self.label_ingreso = ctk.CTkLabel(self.panel_ingreso, text="", 
-                                          text_color="red", 
-                                          font=("Inter", 13, "bold"))
-        self.label_ingreso.pack(pady=5)
-        
-        self.setup_recent_table(self.panel_ingreso, 'ingreso')
-
-    def setup_asignacion_panel(self):
-        ctk.CTkLabel(self.panel_asignacion, text="Assign / Return", 
-                    font=("Inter", 22, "bold")).pack(pady=30)
-        
-        self.entry_asignacion = ctk.CTkEntry(self.panel_asignacion, 
-                                             placeholder_text="Scan to Assign/Return", 
-                                             width=300, height=40, 
-                                             font=("Inter", 16), 
-                                             border_width=3, 
-                                             border_color=BORDER_DEFAULT, 
-                                             corner_radius=15)
-        self.entry_asignacion.pack(pady=10)
-        self.entry_asignacion.bind("<Return>", lambda e: self.process_session_scan('asignacion_retoma'))
-        
-        self.label_asignacion = ctk.CTkLabel(self.panel_asignacion, text="", 
-                                             text_color="red", 
-                                             font=("Inter", 13, "bold"))
-        self.label_asignacion.pack(pady=5)
-        
-        self.setup_recent_table(self.panel_asignacion, 'asignacion')
-
-    def setup_perdida_panel(self):
-        ctk.CTkLabel(self.panel_perdida, text="Loss / Damage Report", 
-                    font=("Inter", 22, "bold")).pack(pady=30)
-        
-        ctk.CTkLabel(self.panel_perdida, text="Scan serial or enter Pipkins code", 
-                    font=("Inter", 13), text_color="#94a3b8").pack(pady=(0, 20))
-        
-        self.entry_perdida = ctk.CTkEntry(self.panel_perdida, 
-                                          placeholder_text="Scan serial or enter Pipkins code", 
-                                          width=300, height=40, 
-                                          font=("Inter", 16), 
-                                          border_width=3, 
-                                          border_color=BORDER_DEFAULT, 
-                                          corner_radius=15)
-        self.entry_perdida.pack(pady=10)
-        self.entry_perdida.bind("<Return>", lambda e: self.process_session_scan('perdida_dano'))
-        
-        self.label_perdida = ctk.CTkLabel(self.panel_perdida, text="", 
-                                          text_color="red", 
-                                          font=("Inter", 13, "bold"))
-        self.label_perdida.pack(pady=5)
-        
-        self.setup_recent_table(self.panel_perdida, 'perdida')
-
-    def setup_recent_table(self, parent, tipo):
-        frame = ctk.CTkFrame(parent, fg_color=SLATE_GRAY, corner_radius=12)
-        frame.pack(pady=18, padx=10, fill='x')
-        
-        ctk.CTkLabel(frame, text="Recent movements", 
-                    font=("Inter", 15, "bold"), 
-                    text_color="#38bdf8").pack(anchor='w', padx=10, pady=(8, 0))
-        
-        columns = ("Serial", "Pipkins Code", "Action", "Date", "Time")
-        
-        style = ttk.Style()
-        style.theme_use('clam')
-        
-        style.configure(f'{tipo}.Treeview', 
-                       font=('Segoe UI', 11), 
-                       rowheight=28, 
-                       background=SLATE_GRAY, 
-                       fieldbackground=SLATE_GRAY, 
-                       foreground="#e0e7ef", 
-                       borderwidth=0)
-        
-        style.configure(f'{tipo}.Treeview.Heading', 
-                       font=('Segoe UI', 12, 'bold'), 
-                       background="#334155", 
-                       foreground="#38bdf8")
-        
-        tree = ttk.Treeview(frame, columns=columns, show='headings', 
-                           height=5, style=f'{tipo}.Treeview')
-        
-        for col in columns:
-            tree.heading(col, text=col)
-            tree.column(col, anchor='center', width=120)
-        
-        tree.pack(side='left', fill='x', expand=True, padx=10, pady=10)
-        
-        setattr(self, f"tree_recent_{tipo}", tree)
-        self.load_recent_data(tipo)
-
-    def load_recent_data(self, tipo):
-        tree = getattr(self, f"tree_recent_{tipo}", None)
-        if not tree: return
-        
-        tree.delete(*tree.get_children())
-        movimientos = self.get_recent_movements(tipo)
-        
-        for mov in movimientos:
-            tree.insert('', 'end', values=mov)
-
-    def get_recent_movements(self, tipo):
-        if not os.path.isfile(JSON_FILE): return []
-        
-        with open(JSON_FILE, 'r', encoding='utf-8') as f:
-            datos = json.load(f)
-        
-        movs = []
-        for item in datos:
-            codigo = item.get('codigo_pipkins', '-')
-            
-            for h in item.get('historial', []):
-                if tipo == 'nueva' and h['accion'] == 'Registro':
-                    movs.append((item['serial'], codigo, h['accion'], h['fecha'], h['hora']))
-                elif tipo == 'ingreso' and ('Break' in h['accion'] or 'Lunch' in h['accion']):
-                    movs.append((item['serial'], codigo, h['accion'], h['fecha'], h['hora']))
-                elif tipo == 'asignacion' and ('Assign' in h['accion'] or 'Return' in h['accion']):
-                    movs.append((item['serial'], codigo, h['accion'], h['fecha'], h['hora']))
-                elif tipo == 'perdida' and h['accion'] in ['Loss', 'Damage']:
-                    movs.append((item['serial'], codigo, h['accion'], h['fecha'], h['hora']))
-        
-        return sorted(movs, key=lambda x: (x[3], x[4]), reverse=True)[:5]
-
-    def serial_exists(self, serial):
-        if not os.path.isfile(JSON_FILE):
-            return False
-        
-        with open(JSON_FILE, 'r', encoding='utf-8') as f:
-            datos = json.load(f)
-        
-        return any(item['serial'].upper() == serial.upper() for item in datos)
-
-    def find_by_pipkins(self, pipkins_code):
-        if not os.path.isfile(JSON_FILE):
-            return None
-        
-        with open(JSON_FILE, 'r', encoding='utf-8') as f:
-            datos = json.load(f)
-        
-        for item in datos:
-            if item.get('codigo_pipkins', '').upper() == pipkins_code.upper():
-                return item
-        
-        return None
-
-    def ask_user_and_pipkins(self):
-        modal = ctk.CTkToplevel(self)
-        modal.title("Manual Yubikey Registration")
-        modal.geometry("420x370")
-        modal.grab_set()
-        
-        frame = ctk.CTkFrame(modal, fg_color="#1e293b", corner_radius=18)
-        frame.pack(padx=24, pady=24, fill="both", expand=True)
-        
-        ctk.CTkLabel(frame, text="Manual Registration", 
-                    font=("Inter", 24, "bold"), 
-                    text_color="#38bdf8").pack(pady=(10, 18))
-        
-        ctk.CTkLabel(frame, text="Yubikey Serial:", 
-                    font=("Inter", 16)).pack(anchor='w', padx=10, pady=(4, 0))
-        serial_var = ctk.StringVar()
-        serial_entry = ctk.CTkEntry(frame, textvariable=serial_var, 
-                                   width=260, font=("Inter", 15), corner_radius=10)
-        serial_entry.pack(pady=(0, 10))
-        serial_entry.focus_set()
-        
-        ctk.CTkLabel(frame, text="User:", 
-                    font=("Inter", 16)).pack(anchor='w', padx=10, pady=(4, 0))
-        usuario_var = ctk.StringVar()
-        usuario_entry = ctk.CTkEntry(frame, textvariable=usuario_var, 
-                                    width=260, font=("Inter", 15), corner_radius=10)
-        usuario_entry.pack(pady=(0, 10))
-        
-        ctk.CTkLabel(frame, text="Pipkins Code:", 
-                    font=("Inter", 16)).pack(anchor='w', padx=10, pady=(4, 0))
-        pipkins_var = ctk.StringVar()
-        pipkins_entry = ctk.CTkEntry(frame, textvariable=pipkins_var, 
-                                    width=260, font=("Inter", 15), corner_radius=10)
-        pipkins_entry.pack(pady=(0, 10))
-        
-        error_label = ctk.CTkLabel(frame, text="", 
-                                  text_color="#ef4444", 
-                                  font=("Inter", 13, "bold"))
-        error_label.pack(pady=(0, 2))
-        
-        result = {'ok': False, 'serial': '', 'usuario': '', 'pipkins': ''}
-        
-        def registrar():
-            serial = serial_var.get().strip()
-            usuario = usuario_var.get().strip()
-            pipkins = pipkins_var.get().strip()
-            
-            if not serial or not usuario or not pipkins:
-                error_label.configure(text="All fields are required")
-                return
-            
-            result['ok'] = True
-            result['serial'] = serial
-            result['usuario'] = usuario
-            result['pipkins'] = pipkins
-            modal.destroy()
-        
-        ctk.CTkButton(frame, text="Register", command=registrar, 
-                     fg_color="#38bdf8", hover_color="#0ea5e9", 
-                     font=("Inter", 17, "bold"), corner_radius=12).pack(pady=16)
-        
-        modal.wait_window()
-        
-        if result['ok']:
-            return result['serial'], result['usuario'], result['pipkins']
-        return None, None, None
-
-    def registrar_nueva_yubikey(self, event=None):
-        serial = self.entry_nueva.get().strip().upper()
-        
-        if not serial:
-            self.label_nueva.configure(text="Empty field!", text_color="red")
-            self.entry_nueva.configure(border_color="red")
-            self.after(2000, lambda: self.entry_nueva.configure(border_color=BORDER_DEFAULT))
-            return
-
-        if self.serial_exists(serial):
-            self.label_nueva.configure(text="⚠️ Serial already registered", text_color="orange")
-            self.entry_nueva.configure(border_color="orange")
-            self.after(3000, lambda: self.entry_nueva.configure(border_color=BORDER_DEFAULT))
-            self.entry_nueva.delete(0, 'end')
-            return
-
-        serial_modal, nombre, codigo = self.ask_user_and_pipkins()
-        
-        if nombre and codigo:
-            now = datetime.now()
-            
-            nueva = {
-                "serial": serial,
-                "usuario": nombre,
-                "codigo_pipkins": codigo,
-                "estado": "In Use",
-                "ultima_conexion": now.strftime("%Y-%m-%d"),
-                "historial": [{
-                    "accion": "Registro",
-                    "fecha": now.strftime("%Y-%m-%d"),
-                    "hora": now.strftime("%H:%M:%S"),
-                    "usuario": nombre,
-                    "codigo_pipkins": codigo,
-                    "estado": "In Use",
-                    "comentario": "Initial registration"
-                }]
-            }
-            
-            with open(JSON_FILE, 'r', encoding='utf-8') as f:
-                datos = json.load(f)
-            
-            datos.append(nueva)
-            
-            with open(JSON_FILE, 'w', encoding='utf-8') as f:
-                json.dump(datos, f, indent=4, ensure_ascii=False)
-            
-            self.label_nueva.configure(text="Registered and IN USE!", text_color=SUCCESS_GREEN)
-            self.entry_nueva.delete(0, 'end')
-            
-            self.load_recent_data('nueva')
-            self.load_inventory_table()
-            
-            self.after(3000, lambda: self.label_nueva.configure(text=""))
-
-    def ask_break_type(self):
-        modal = ctk.CTkToplevel(self)
-        modal.title("Select Break/Lunch Type")
-        modal.geometry("340x200")
-        modal.grab_set()
-        
-        ctk.CTkLabel(modal, text="Check-in or check-out from?", 
-                    font=("Inter", 17, "bold"), 
-                    text_color="#38bdf8").pack(pady=(18, 18))
-        
-        tipo_var = ctk.StringVar(value="Break")
-        opciones = ["Break", "Lunch"]
-        
-        for op in opciones:
-            ctk.CTkRadioButton(modal, text=op, variable=tipo_var, value=op, 
-                             font=("Inter", 15)).pack(anchor='w', padx=40, pady=8)
-        
-        result = {'ok': False}
-        
-        def aceptar():
-            result['ok'] = True
-            modal.destroy()
-        
-        ctk.CTkButton(modal, text="Continue", command=aceptar, 
-                     fg_color="#38bdf8", hover_color="#0ea5e9", 
-                     font=("Inter", 15, "bold"), width=150, 
-                     corner_radius=10).pack(pady=18)
-        
-        modal.wait_window()
-        
-        if result['ok']:
-            return tipo_var.get()
-        return None
-
-    def ask_asignacion_retoma_type(self):
-        modal = ctk.CTkToplevel(self)
-        modal.title("Select Action Type")
-        modal.geometry("500x350")
-        modal.grab_set()
-        
-        ctk.CTkLabel(modal, text="What action will you perform?", 
-                    font=("Inter", 18, "bold"), 
-                    text_color="#38bdf8").pack(pady=(20, 15))
-        
-        ctk.CTkLabel(modal, text="• Assign: Give AVAILABLE yubikey to new user", 
-                    font=("Inter", 13), text_color="#94a3b8", 
-                    justify="left").pack(pady=8, padx=30, anchor="w")
-        ctk.CTkLabel(modal, text="• Return: User RETURNS yubikey (no longer works here)", 
-                    font=("Inter", 13), text_color="#94a3b8", 
-                    justify="left").pack(pady=8, padx=30, anchor="w")
-        
-        tipo_var = ctk.StringVar(value="Assign")
-        opciones = ["Assign", "Return"]
-        
-        for op in opciones:
-            ctk.CTkRadioButton(modal, text=op, variable=tipo_var, value=op, 
-                             font=("Inter", 15, "bold")).pack(anchor='w', padx=50, pady=15)
-        
-        result = {'ok': False}
-        
-        def aceptar():
-            result['ok'] = True
-            modal.destroy()
-        
-        ctk.CTkButton(modal, text="Continue", command=aceptar, 
-                     fg_color="#38bdf8", hover_color="#0ea5e9", 
-                     font=("Inter", 15, "bold"), width=200, 
-                     corner_radius=12).pack(pady=25)
-        
-        modal.wait_window()
-        
-        if result['ok']:
-            return tipo_var.get()
-        return None
-
-    def ask_nuevo_usuario_pipkins(self):
-        modal = ctk.CTkToplevel(self)
-        modal.title("New User Details")
-        modal.geometry("420x320")
-        modal.grab_set()
-        
-        frame = ctk.CTkFrame(modal, fg_color="#1e293b", corner_radius=18)
-        frame.pack(padx=24, pady=24, fill="both", expand=True)
-        
-        ctk.CTkLabel(frame, text="Assign to new user", 
-                    font=("Inter", 20, "bold"), 
-                    text_color="#38bdf8").pack(pady=(10, 18))
-        
-        ctk.CTkLabel(frame, text="User name:", 
-                    font=("Inter", 15)).pack(anchor='w', padx=10, pady=(4, 0))
-        usuario_var = ctk.StringVar()
-        usuario_entry = ctk.CTkEntry(frame, textvariable=usuario_var, 
-                                    width=260, font=("Inter", 14), corner_radius=10)
-        usuario_entry.pack(pady=(0, 10))
-        usuario_entry.focus_set()
-        
-        ctk.CTkLabel(frame, text="Pipkins Code:", 
-                    font=("Inter", 15)).pack(anchor='w', padx=10, pady=(4, 0))
-        pipkins_var = ctk.StringVar()
-        pipkins_entry = ctk.CTkEntry(frame, textvariable=pipkins_var, 
-                                    width=260, font=("Inter", 14), corner_radius=10)
-        pipkins_entry.pack(pady=(0, 10))
-        
-        error_label = ctk.CTkLabel(frame, text="", 
-                                  text_color="#ef4444", 
-                                  font=("Inter", 13, "bold"))
-        error_label.pack(pady=(0, 2))
-        
-        result = {'ok': False, 'usuario': '', 'pipkins': ''}
-        
-        def aceptar():
-            usuario = usuario_var.get().strip()
-            pipkins = pipkins_var.get().strip()
-            
-            if not usuario or not pipkins:
-                error_label.configure(text="All fields are required")
-                return
-            
-            result['ok'] = True
-            result['usuario'] = usuario
-            result['pipkins'] = pipkins
-            modal.destroy()
-        
-        ctk.CTkButton(frame, text="Assign", command=aceptar, 
-                     fg_color="#38bdf8", hover_color="#0ea5e9", 
-                     font=("Inter", 16, "bold"), 
-                     corner_radius=12).pack(pady=16)
-        
-        modal.wait_window()
-        
-        if result['ok']:
-            return result['usuario'], result['pipkins']
-        return None, None
-
-    def ask_comentario(self, titulo, mensaje):
-        modal = ctk.CTkToplevel(self)
-        modal.title(titulo)
-        modal.geometry("500x350")
-        modal.grab_set()
-        
-        frame = ctk.CTkFrame(modal, fg_color="#1e293b", corner_radius=18)
-        frame.pack(padx=24, pady=24, fill="both", expand=True)
-        
-        ctk.CTkLabel(frame, text=mensaje, 
-                    font=("Inter", 16, "bold"), 
-                    text_color="#38bdf8", 
-                    wraplength=420).pack(pady=(10, 10))
-        
-        comentario_text = ctk.CTkTextbox(frame, width=430, height=150, 
-                                        font=("Inter", 13))
-        comentario_text.pack(pady=10, padx=10)
-        comentario_text.focus_set()
-        
-        result = {'ok': False, 'comentario': ''}
-        
-        def aceptar():
-            comentario = comentario_text.get("1.0", "end-1c").strip()
-            result['ok'] = True
-            result['comentario'] = comentario
-            modal.destroy()
-        
-        btn_frame = ctk.CTkFrame(frame, fg_color="transparent")
-        btn_frame.pack(pady=10)
-        
-        ctk.CTkButton(btn_frame, text="Submit", command=aceptar, 
-                     fg_color="#38bdf8", hover_color="#0ea5e9", 
-                     font=("Inter", 15, "bold"), 
-                     corner_radius=12, width=120).pack(side="left", padx=10)
-        
-        ctk.CTkButton(btn_frame, text="Skip", command=modal.destroy, 
-                     fg_color="#475569", hover_color="#64748b", 
-                     font=("Inter", 15), 
-                     corner_radius=12, width=100).pack(side="left", padx=10)
-        
-        modal.wait_window()
-        
-        return result['comentario'] if result['ok'] else ""
-
-    def process_session_scan(self, session):
-        if session == 'ingreso_salida':
-            entry = self.entry_ingreso
-            label = self.label_ingreso
-            tipo_tree = 'ingreso'
-            tipo_break = self.ask_break_type()
-            
-            if tipo_break is None:
-                label.configure(text="Action cancelled", text_color="orange")
-                return
-                
-        elif session == 'asignacion_retoma':
-            entry = self.entry_asignacion
-            label = self.label_asignacion
-            tipo_tree = 'asignacion'
-            tipo_accion = self.ask_asignacion_retoma_type()
-            
-            if tipo_accion is None:
-                label.configure(text="Action cancelled", text_color="orange")
-                return
-                
-        else:
-            entry = self.entry_perdida
-            label = self.label_perdida
-            tipo_tree = 'perdida'
-            tipo_accion = None
-            
-        serial_or_pipkins = entry.get().strip()
-        
-        if not serial_or_pipkins:
-            label.configure(text="Empty field!")
-            entry.configure(border_color="red")
-            self.after(2000, lambda: entry.configure(border_color=BORDER_DEFAULT))
-            return
-            
-        item_data = None
-        found_by_pipkins = False
-        
-        with open(JSON_FILE, 'r', encoding='utf-8') as f:
-            datos = json.load(f)
-        
-        for item in datos:
-            if item['serial'].strip().upper() == serial_or_pipkins.upper():
-                item_data = item
-                break
-        
-        if not item_data:
-            item_data = self.find_by_pipkins(serial_or_pipkins)
-            
-            if item_data:
-                found_by_pipkins = True
-                serial = item_data['serial']
-            else:
-                label.configure(text="❌ Serial or Pipkins code not found", text_color="red")
-                entry.configure(border_color="red")
-                self.after(3000, lambda: entry.configure(border_color=BORDER_DEFAULT))
-                entry.delete(0, 'end')
-                entry.focus_set()
-                return
-        else:
-            serial = item_data['serial']
-            
-        label.configure(text="")
-        
-        now = datetime.now()
-        fecha = now.strftime('%Y-%m-%d')
-        hora = now.strftime('%H:%M:%S')
-        accion = ''
-        cambio = False
-        found = False
-        comentario = ""
-        
-        for item in datos:
-            if item['serial'].strip().upper() == serial.upper():
-                found = True
-                
-                if session == 'ingreso_salida':
-                    estado_actual = item['estado']
-                    estado_seleccionado = f'On {tipo_break}'
-                    
-                    if estado_actual == 'In Use':
-                        item['estado'] = estado_seleccionado
-                        accion = f'Check-in to {tipo_break}'
-                        item['ultima_conexion'] = fecha
-                        cambio = True
-                        
-                    elif estado_actual == estado_seleccionado:
-                        item['estado'] = 'In Use'
-                        accion = f'Check-out from {tipo_break}'
-                        item['ultima_conexion'] = fecha
-                        cambio = True
-                        
-                    elif estado_actual in ['On Break', 'On Lunch'] and estado_actual != estado_seleccionado:
-                        otro = estado_actual.replace('On ', '')
-                        accion = f"⚠️ Must check-out from {otro} first"
-                        break
-                        
-                    else:
-                        accion = f"❌ Not applicable: state '{estado_actual}'"
-                        break
-                        
-                elif session == 'asignacion_retoma':
-                    estado_actual = item['estado']
-                    
-                    if tipo_accion == 'Return':
-                        if estado_actual in ['In Use', 'On Break', 'On Lunch']:
-                            usuario_anterior = item['usuario']
-                            
-                            comentario = self.ask_comentario(
-                                "Yubikey Return",
-                                f"User '{usuario_anterior}' returns yubikey (no longer works here)\nOptional comment:"
-                            )
-                            
-                            item['estado'] = 'Available'
-                            item['usuario'] = ''
-                            item['codigo_pipkins'] = ''
-                            accion = f'Return (previous: {usuario_anterior})'
-                            item['ultima_conexion'] = fecha
-                            cambio = True
-                            
-                        elif estado_actual == 'Available':
-                            accion = "❌ Cannot return: already AVAILABLE"
-                            break
-                            
-                        elif estado_actual in ['Loss', 'Damage']:
-                            accion = f"❌ Cannot return: state is '{estado_actual}'"
-                            break
-                            
-                        else:
-                            accion = f"❌ Invalid state for return: '{estado_actual}'"
-                            break
-                            
-                    elif tipo_accion == 'Assign':
-                        if estado_actual == 'Available':
-                            nuevo_usuario, nuevo_pipkins = self.ask_nuevo_usuario_pipkins()
-                            
-                            if nuevo_usuario and nuevo_pipkins:
-                                item['estado'] = 'In Use'
-                                item['usuario'] = nuevo_usuario
-                                item['codigo_pipkins'] = nuevo_pipkins
-                                accion = f'Assign to {nuevo_usuario}'
-                                item['ultima_conexion'] = fecha
-                                cambio = True
-                            else:
-                                accion = "Assignment cancelled"
-                                break
-                                
-                        elif estado_actual in ['In Use', 'On Break', 'On Lunch']:
-                            accion = f"❌ Already ASSIGNED to '{item['usuario']}'. Must RETURN first."
-                            break
-                            
-                        elif estado_actual in ['Loss', 'Damage']:
-                            accion = f"❌ Cannot assign: state is '{estado_actual}'"
-                            break
-                            
-                        else:
-                            accion = f"❌ Invalid state for assignment: '{estado_actual}'"
-                            break
-                            
-                elif session == 'perdida_dano':
-                    estado_actual = item['estado']
-                    
-                    if estado_actual in ['Loss', 'Damage']:
-                        accion = f"❌ Already in state '{estado_actual}'"
-                        break
-                    
-                    modal = ctk.CTkToplevel(self)
-                    modal.title("Select Incident Type")
-                    modal.geometry("400x250")
-                    modal.grab_set()
-                    
-                    ctk.CTkLabel(modal, text="What type of incident is this?", 
-                                font=("Inter", 17, "bold"), 
-                                text_color="#38bdf8").pack(pady=(18, 18))
-                    
-                    tipo_var = ctk.StringVar(value="Loss")
-                    opciones = ["Loss", "Damage"]
-                    
-                    for op in opciones:
-                        ctk.CTkRadioButton(modal, text=op, variable=tipo_var, value=op, 
-                                         font=("Inter", 15)).pack(anchor='w', padx=40, pady=8)
-                    
-                    result_modal = {'ok': False}
-                    
-                    def aceptar_modal():
-                        result_modal['ok'] = True
-                        modal.destroy()
-                    
-                    ctk.CTkButton(modal, text="Continue", command=aceptar_modal, 
-                                 fg_color="#38bdf8", hover_color="#0ea5e9", 
-                                 font=("Inter", 15, "bold"),
-                                 width=150, corner_radius=10).pack(pady=18)
-                    
-                    modal.wait_window()
-                    
-                    if not result_modal['ok']:
-                        accion = "Action cancelled"
-                        break
-                    
-                    tipo_incidente = tipo_var.get()
-                    search_method = "via Pipkins code" if found_by_pipkins else "via serial scanner"
-                    
-                    comentario = self.ask_comentario(
-                        f"Report {tipo_incidente}",
-                        f"Reporting {tipo_incidente.lower()} ({search_method})\nSerial: {item['serial']}\nUser: {item.get('usuario', 'N/A')}\nPipkins: {item.get('codigo_pipkins', 'N/A')}\n\nDescribe what happened:"
-                    )
-                    
-                    item['estado'] = tipo_incidente
-                    accion = tipo_incidente
-                    item['ultima_conexion'] = fecha
-                    cambio = True
-                        
-                if 'historial' not in item:
-                    item['historial'] = []
-                
-                item['historial'].append({
-                    'fecha': fecha,
-                    'hora': hora,
-                    'accion': accion,
-                    'estado': item['estado'],
-                    'usuario': item['usuario'],
-                    'codigo_pipkins': item.get('codigo_pipkins', ''),
-                    'comentario': comentario
-                })
-                break
-        
-        if not found:
-            accion = "Serial not found"
-            
-        if cambio:
-            with open(JSON_FILE, 'w', encoding='utf-8') as f:
-                json.dump(datos, f, indent=4, ensure_ascii=False)
-            
-            entry.configure(border_color=SUCCESS_GREEN)
-            label.configure(text=f"✓ {accion}", text_color=SUCCESS_GREEN)
-            self.after(500, lambda: entry.configure(border_color=BORDER_DEFAULT))
-            entry.delete(0, 'end')
-            
-            self.load_inventory_table(refresh=True)
-            self.load_recent_data(tipo_tree)
-            self.after(3000, lambda: label.configure(text=""))
-        else:
-            entry.configure(border_color="orange")
-            label.configure(text=accion, text_color="orange")
-            self.after(1000, lambda: entry.configure(border_color=BORDER_DEFAULT))
-        
-        entry.focus_set()
-
-    # ============================================================================
-    # VISTA DE INVENTARIO (CON BOTÓN DE EXPORTAR AL LADO DE VIEW DETAILS)
-    # ============================================================================
-    def setup_inv_view(self):
-        ctk.CTkLabel(self.view_inv, text="General Inventory", 
-                    font=("Inter", 32, "bold"), 
-                    text_color="#38bdf8").pack(pady=15)
-        
-        filter_frame = ctk.CTkFrame(self.view_inv, fg_color=SLATE_GRAY, corner_radius=12)
-        filter_frame.pack(pady=10, padx=20, fill="x")
-        
-        ctk.CTkLabel(filter_frame, text="Filter by state:", 
-                    font=("Inter", 14, "bold")).pack(side="left", padx=15, pady=10)
-        
-        self.filter_var = ctk.StringVar(value="All")
-        estados = ["All", "Available", "In Use", "On Break", "On Lunch", "Loss", "Damage"]
-        
-        for estado in estados:
-            ctk.CTkRadioButton(filter_frame, text=estado, 
-                             variable=self.filter_var, 
-                             value=estado,
-                             command=self.filter_inventory, 
-                             font=("Inter", 13)).pack(side="left", padx=8, pady=10)
-        
-        search_frame = ctk.CTkFrame(self.view_inv, fg_color="transparent")
-        search_frame.pack(pady=5)
-        
-        self.search_var = ctk.StringVar()
-        search_entry = ctk.CTkEntry(search_frame, 
-                                   textvariable=self.search_var, 
-                                   placeholder_text="Search by serial or user...", 
-                                   width=300)
-        search_entry.pack(side="left", padx=10)
-        
-        search_entry.bind("<KeyRelease>", lambda e: self.filter_inventory())
-        
-        ctk.CTkButton(search_frame, text="📋 View Details", 
-                     command=self.show_item_details,
-                     fg_color="#38bdf8", hover_color="#0ea5e9", 
-                     font=("Inter", 13, "bold")).pack(side="left", padx=10)
-        
-        ctk.CTkButton(search_frame, text="📥 Export Inventory", 
-                     command=self.export_inventory,
-                     fg_color="#38bdf8", hover_color="#0ea5e9", 
-                     font=("Inter", 13, "bold"),
-                     width=180).pack(side="left", padx=10)
-
-        table_frame = ctk.CTkFrame(self.view_inv, fg_color=SLATE_GRAY, corner_radius=15)
-        table_frame.pack(expand=True, fill="both", padx=20, pady=10)
-
-        cols = ("Serial", "User", "Pipkins", "State", "Last Connection")
-        
-        self.inv_tree = ttk.Treeview(table_frame, columns=cols, 
-                                    show='headings', style='Custom.Treeview')
-        
-        style = ttk.Style()
-        style.configure('Custom.Treeview', 
-                       font=('Segoe UI', 12), 
-                       rowheight=35, 
-                       background=SLATE_GRAY, 
-                       fieldbackground=SLATE_GRAY, 
-                       foreground="white")
-        style.configure('Custom.Treeview.Heading', 
-                       font=('Segoe UI', 13, 'bold'))
-        
-        for estado, color in ESTADO_COLORES.items():
-            self.inv_tree.tag_configure(estado, background=color, foreground="white")
-        
-        for col in cols:
-            self.inv_tree.heading(col, text=col)
-            self.inv_tree.column(col, anchor='center', width=150)
-        
-        self.inv_tree.pack(fill="both", expand=True, padx=10, pady=10)
-        
-        self.inv_tree.bind("<Double-1>", lambda e: self.show_item_details())
-        
-        scrollbar = ttk.Scrollbar(self.inv_tree, orient="vertical", 
-                                 command=self.inv_tree.yview)
-        self.inv_tree.configure(yscrollcommand=scrollbar.set)
-        scrollbar.pack(side="right", fill="y")
-
-    def load_inventory_table(self, refresh=False):
+    def load_inventory_table(self):
         if not hasattr(self, 'inv_tree'):
             return
         
@@ -1056,7 +1695,7 @@ class YubiDash(ctk.CTk):
             if filter_estado != "All" and estado != filter_estado:
                 continue
             
-            if search_term and (search_term not in item['serial'].lower() and 
+            if search_term and (search_term not in item['serial'].lower() and
                                search_term not in item.get('usuario', '').lower()):
                 continue
             
@@ -1070,515 +1709,29 @@ class YubiDash(ctk.CTk):
             self.inv_tree.insert('', 'end', values=values, tags=(estado,))
 
     def export_inventory(self):
-        modal = ctk.CTkToplevel(self)
-        modal.title("Export Inventory")
-        modal.geometry("400x250")
-        modal.grab_set()
+        filename = filedialog.asksaveasfilename(
+            defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+            initialfile=f"Inventory_{datetime.now().strftime('%Y%m%d')}.csv"
+        )
         
-        ctk.CTkLabel(modal, text="📥 Export Inventory", 
-                    font=("Inter", 20, "bold"), 
-                    text_color="#38bdf8").pack(pady=20)
-        
-        ctk.CTkLabel(modal, text="Select export format:", 
-                    font=("Inter", 14)).pack(pady=10)
-        
-        format_var = ctk.StringVar(value="CSV")
-        
-        ctk.CTkRadioButton(modal, text="📊 CSV (Excel compatible)", 
-                          variable=format_var, value="CSV",
-                          font=("Inter", 14)).pack(pady=5)
-        
-        ctk.CTkRadioButton(modal, text="📄 TXT (Text file)", 
-                          variable=format_var, value="TXT",
-                          font=("Inter", 14)).pack(pady=5)
-        
-        result = {'ok': False}
-        
-        def exportar():
-            result['ok'] = True
-            result['format'] = format_var.get()
-            modal.destroy()
-        
-        def cancelar():
-            modal.destroy()
-        
-        btn_frame = ctk.CTkFrame(modal, fg_color="transparent")
-        btn_frame.pack(pady=20)
-        
-        ctk.CTkButton(btn_frame, text="Export", command=exportar, 
-                     fg_color="#38bdf8", hover_color="#0ea5e9", 
-                     font=("Inter", 15, "bold"),
-                     width=120).pack(side="left", padx=10)
-        
-        ctk.CTkButton(btn_frame, text="Cancel", command=cancelar, 
-                     fg_color="#475569", hover_color="#64748b", 
-                     font=("Inter", 15),
-                     width=120).pack(side="left", padx=10)
-        
-        modal.wait_window()
-        
-        if not result.get('ok'):
-            return
-        
-        formato = result['format']
-        fecha_actual = datetime.now().strftime('%Y%m%d_%H%M%S')
-        
-        if formato == "CSV":
-            filename = filedialog.asksaveasfilename(
-                defaultextension=".csv",
-                filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
-                initialfile=f"Inventory_Export_{fecha_actual}.csv"
-            )
-        else:
-            filename = filedialog.asksaveasfilename(
-                defaultextension=".txt",
-                filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
-                initialfile=f"Inventory_Export_{fecha_actual}.txt"
-            )
-        
-        if not filename:
-            return
-        
-        try:
+        if filename:
             with open(JSON_FILE, 'r', encoding='utf-8') as f:
                 datos = json.load(f)
             
-            if formato == "CSV":
-                self._export_to_csv(filename, datos)
-            else:
-                self._export_to_txt(filename, datos)
-            
-            modal_success = ctk.CTkToplevel(self)
-            modal_success.title("Export Complete")
-            modal_success.geometry("350x150")
-            modal_success.grab_set()
-            
-            ctk.CTkLabel(modal_success, text="✅ Export Complete!", 
-                        font=("Inter", 18, "bold"), 
-                        text_color=SUCCESS_GREEN).pack(pady=20)
-            
-            ctk.CTkLabel(modal_success, text=f"Saved to:\n{filename}", 
-                        font=("Inter", 10), 
-                        text_color="#94a3b8",
-                        wraplength=300).pack(pady=10)
-            
-            ctk.CTkButton(modal_success, text="OK", command=modal_success.destroy, 
-                         fg_color="#38bdf8", font=("Inter", 14, "bold")).pack(pady=10)
-            
-        except Exception as e:
-            modal_error = ctk.CTkToplevel(self)
-            modal_error.title("Export Error")
-            modal_error.geometry("350x150")
-            modal_error.grab_set()
-            
-            ctk.CTkLabel(modal_error, text="❌ Export Error", 
-                        font=("Inter", 18, "bold"), 
-                        text_color="#ef4444").pack(pady=20)
-            
-            ctk.CTkLabel(modal_error, text=str(e), 
-                        font=("Inter", 10), 
-                        text_color="#94a3b8").pack(pady=10)
-            
-            ctk.CTkButton(modal_error, text="OK", command=modal_error.destroy, 
-                         fg_color="#475569", font=("Inter", 14)).pack(pady=10)
-
-    def _export_to_csv(self, filename, datos):
-        with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
-            writer = csv.writer(csvfile)
-            
-            writer.writerow(['=' * 80])
-            writer.writerow(['YUBIKEY INVENTORY EXPORT'])
-            writer.writerow([f'Export Date: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}'])
-            writer.writerow(['=' * 80])
-            writer.writerow([])
-            
-            writer.writerow(['Serial', 'User', 'Pipkins', 'State', 'Last Connection', 'History Date', 'History Action', 'History Comment'])
-            writer.writerow(['-' * 80])
-            
-            for item in datos:
-                writer.writerow([
-                    item['serial'],
-                    item.get('usuario', ''),
-                    item.get('codigo_pipkins', ''),
-                    item['estado'],
-                    item.get('ultima_conexion', '')
-                ])
-                
-                historial = item.get('historial', [])
-                for h in historial:
+            with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
+                writer = csv.writer(csvfile)
+                writer.writerow(['Serial', 'User', 'Pipkins', 'State', 'Last Connection'])
+                for item in datos:
                     writer.writerow([
-                        '', '', '', '', '',
-                        f"{h.get('fecha', '')} {h.get('hora', '')}",
-                        h.get('accion', ''),
-                        h.get('comentario', '')
+                        item['serial'],
+                        item.get('usuario', ''),
+                        item.get('codigo_pipkins', ''),
+                        item['estado'],
+                        item.get('ultima_conexion', '')
                     ])
-                
-                writer.writerow([])
             
-            writer.writerow(['=' * 80])
-            writer.writerow(['SUMMARY'])
-            writer.writerow([f'Total Yubikeys: {len(datos)}'])
-            
-            estados_count = {}
-            for item in datos:
-                estado = item['estado']
-                estados_count[estado] = estados_count.get(estado, 0) + 1
-            
-            writer.writerow([])
-            writer.writerow(['By State:'])
-            for estado, count in estados_count.items():
-                writer.writerow([f'  {estado}: {count}'])
-            
-            writer.writerow(['=' * 80])
-
-    def _export_to_txt(self, filename, datos):
-        with open(filename, 'w', encoding='utf-8') as f:
-            f.write("=" * 80 + "\n")
-            f.write("YUBIKEY INVENTORY EXPORT\n")
-            f.write(f"Export Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-            f.write("=" * 80 + "\n\n")
-            
-            for i, item in enumerate(datos, 1):
-                f.write(f"[{i}] {item['serial']}\n")
-                f.write("-" * 80 + "\n")
-                f.write(f"  Current State: {item['estado']}\n")
-                f.write(f"  User: {item.get('usuario', 'N/A') or 'N/A'}\n")
-                f.write(f"  Pipkins Code: {item.get('codigo_pipkins', 'N/A') or 'N/A'}\n")
-                f.write(f"  Last Connection: {item.get('ultima_conexion', 'N/A') or 'N/A'}\n")
-                f.write("\n")
-                
-                f.write("  📋 HISTORY:\n")
-                historial = item.get('historial', [])
-                
-                if not historial:
-                    f.write("    No history recorded\n")
-                else:
-                    for j, h in enumerate(historial, 1):
-                        f.write(f"    [{j}] {h.get('fecha', '')} {h.get('hora', '')}\n")
-                        f.write(f"        Action: {h.get('accion', '')}\n")
-                        f.write(f"        State: {h.get('estado', '')}\n")
-                        
-                        if h.get('usuario'):
-                            f.write(f"        User: {h.get('usuario', '')}\n")
-                        if h.get('codigo_pipkins'):
-                            f.write(f"        Pipkins: {h.get('codigo_pipkins', '')}\n")
-                        if h.get('comentario'):
-                            f.write(f"        💬 Comment: {h.get('comentario', '')}\n")
-                        
-                        f.write("\n")
-                
-                f.write("\n" + "=" * 80 + "\n\n")
-            
-            f.write("SUMMARY\n")
-            f.write("-" * 80 + "\n")
-            f.write(f"Total Yubikeys: {len(datos)}\n\n")
-            
-            estados_count = {}
-            for item in datos:
-                estado = item['estado']
-                estados_count[estado] = estados_count.get(estado, 0) + 1
-            
-            f.write("By State:\n")
-            for estado, count in estados_count.items():
-                f.write(f"  • {estado}: {count}\n")
-            
-            f.write("\n" + "=" * 80 + "\n")
-            f.write("END OF REPORT\n")
-            f.write("=" * 80 + "\n")
-
-    def show_item_details(self):
-        selected = self.inv_tree.selection()
-        
-        if not selected:
-            modal = ctk.CTkToplevel(self)
-            modal.title("History Details")
-            modal.geometry("400x200")
-            modal.grab_set()
-            
-            ctk.CTkLabel(modal, text="⚠️ Select a yubikey first", 
-                        font=("Inter", 16, "bold"), 
-                        text_color="orange").pack(pady=40)
-            
-            ctk.CTkButton(modal, text="Close", command=modal.destroy, 
-                         fg_color="#475569").pack(pady=10)
-            return
-        
-        item = self.inv_tree.item(selected[0])
-        serial = item['values'][0]
-        
-        with open(JSON_FILE, 'r', encoding='utf-8') as f:
-            datos = json.load(f)
-        
-        yubi_data = None
-        for yubi in datos:
-            if yubi['serial'] == serial:
-                yubi_data = yubi
-                break
-        
-        if not yubi_data:
-            return
-        
-        modal = ctk.CTkToplevel(self)
-        modal.title(f"Details - {serial}")
-        modal.geometry("700x550")
-        modal.grab_set()
-        
-        main_frame = ctk.CTkFrame(modal, fg_color="#1e293b", corner_radius=18)
-        main_frame.pack(padx=20, pady=20, fill="both", expand=True)
-        
-        header = ctk.CTkFrame(main_frame, fg_color="#334155", corner_radius=12)
-        header.pack(fill="x", padx=15, pady=15)
-        
-        ctk.CTkLabel(header, text=f"Serial: {serial}", 
-                    font=("Inter", 20, "bold"), 
-                    text_color="#38bdf8").pack(pady=10)
-        
-        info_frame = ctk.CTkFrame(header, fg_color="transparent")
-        info_frame.pack(fill="x", padx=15, pady=10)
-        
-        ctk.CTkLabel(info_frame, text=f"State: {yubi_data['estado']}", 
-                    font=("Inter", 14, "bold"), 
-                    text_color=ESTADO_COLORES.get(yubi_data['estado'], "white")).pack(side="left", padx=20)
-        
-        ctk.CTkLabel(info_frame, text=f"User: {yubi_data.get('usuario', '-') or '-'}", 
-                    font=("Inter", 14)).pack(side="left", padx=20)
-        
-        ctk.CTkLabel(info_frame, text=f"Pipkins: {yubi_data.get('codigo_pipkins', '-') or '-'}", 
-                    font=("Inter", 14)).pack(side="left", padx=20)
-        
-        ctk.CTkLabel(main_frame, text="📋 Complete History", 
-                    font=("Inter", 16, "bold"), 
-                    text_color="#38bdf8").pack(pady=(15, 10), padx=15)
-        
-        scroll_frame = ctk.CTkScrollableFrame(main_frame, width=640, height=280, 
-                                             fg_color="#0f172a", corner_radius=10)
-        scroll_frame.pack(fill="both", expand=True, padx=15, pady=10)
-        
-        historial = yubi_data.get('historial', [])
-        
-        if not historial:
-            ctk.CTkLabel(scroll_frame, text="No history registered", 
-                        font=("Inter", 13), 
-                        text_color="#94a3b8").pack(pady=20)
-        else:
-            for i, h in enumerate(reversed(historial)):
-                item_frame = ctk.CTkFrame(scroll_frame, fg_color="#1e293b", corner_radius=8)
-                item_frame.pack(fill="x", pady=8, padx=10)
-                
-                header_hist = ctk.CTkFrame(item_frame, fg_color="transparent")
-                header_hist.pack(fill="x", padx=10, pady=(10, 5))
-                
-                ctk.CTkLabel(header_hist, text=f"✓ {h['accion']}", 
-                            font=("Inter", 13, "bold"), 
-                            text_color=ESTADO_COLORES.get(h['estado'], "#38bdf8")).pack(side="left")
-                
-                ctk.CTkLabel(header_hist, text=f"{h['fecha']} {h['hora']}", 
-                            font=("Inter", 11), 
-                            text_color="#94a3b8").pack(side="right")
-                
-                if h.get('usuario'):
-                    ctk.CTkLabel(item_frame, text=f"User: {h['usuario']}", 
-                                font=("Inter", 12), 
-                                text_color="#cbd5e1").pack(anchor="w", padx=10, pady=(0, 3))
-                
-                if h.get('codigo_pipkins'):
-                    ctk.CTkLabel(item_frame, text=f"Pipkins: {h['codigo_pipkins']}", 
-                                font=("Inter", 12), 
-                                text_color="#cbd5e1").pack(anchor="w", padx=10, pady=(0, 3))
-                
-                if h.get('comentario'):
-                    ctk.CTkLabel(item_frame, text=f"💬 {h['comentario']}", 
-                                font=("Inter", 11), 
-                                text_color="#fbbf24", 
-                                justify="left").pack(anchor="w", padx=10, pady=5)
-                
-                ctk.CTkLabel(item_frame, text=f"State: {h['estado']}", 
-                            font=("Inter", 11), 
-                            text_color=ESTADO_COLORES.get(h['estado'], "#94a3b8")).pack(anchor="w", padx=10, pady=(0, 10))
-        
-        ctk.CTkButton(main_frame, text="Close", command=modal.destroy, 
-                     fg_color="#475569", hover_color="#64748b", 
-                     font=("Inter", 14, "bold")).pack(pady=15)
-
-    def setup_report_view(self):
-        ctk.CTkLabel(self.view_report, text="📊 INCIDENT REPORTS", 
-                    font=("Inter", 32, "bold"), 
-                    text_color="#38bdf8").pack(pady=20)
-        
-        self.report_tabs = ctk.CTkTabview(self.view_report, corner_radius=15)
-        self.report_tabs.pack(fill="both", expand=True, padx=20, pady=10)
-        
-        self.tab_loss = self.report_tabs.add("🔴 Loss Report")
-        self.tab_damage = self.report_tabs.add("🟣 Damage Report")
-        self.tab_summary = self.report_tabs.add("📈 Summary")
-        
-        self.setup_loss_report_tab()
-        self.setup_damage_report_tab()
-        self.setup_summary_tab()
-
-    def setup_loss_report_tab(self):
-        ctk.CTkLabel(self.tab_loss, text="Lost Yubikeys Report", 
-                    font=("Inter", 20, "bold"), 
-                    text_color="#ef4444").pack(pady=15)
-        
-        stats_frame = ctk.CTkFrame(self.tab_loss, fg_color=SLATE_GRAY, corner_radius=12)
-        stats_frame.pack(fill="x", padx=20, pady=10)
-        
-        self.loss_count_label = ctk.CTkLabel(stats_frame, text="Total Lost: 0", 
-                                            font=("Inter", 16, "bold"), 
-                                            text_color="#ef4444")
-        self.loss_count_label.pack(pady=10)
-        
-        table_frame = ctk.CTkFrame(self.tab_loss, fg_color=SLATE_GRAY, corner_radius=12)
-        table_frame.pack(fill="both", expand=True, padx=20, pady=10)
-        
-        cols = ("Serial", "User", "Pipkins", "Date", "Reported By")
-        self.loss_tree = ttk.Treeview(table_frame, columns=cols, 
-                                     show='headings', height=8)
-        
-        style = ttk.Style()
-        style.configure('Loss.Treeview', 
-                       font=('Segoe UI', 11), 
-                       rowheight=30, 
-                       background=SLATE_GRAY, 
-                       fieldbackground=SLATE_GRAY, 
-                       foreground="white")
-        style.configure('Loss.Treeview.Heading', 
-                       font=('Segoe UI', 12, 'bold'), 
-                       background="#7f1d1d", 
-                       foreground="#ef4444")
-        
-        for col in cols:
-            self.loss_tree.heading(col, text=col)
-            self.loss_tree.column(col, anchor='center', width=140)
-        
-        self.loss_tree.pack(fill="both", expand=True, padx=10, pady=10)
-        
-        comment_frame = ctk.CTkFrame(self.tab_loss, fg_color=SLATE_GRAY, corner_radius=12)
-        comment_frame.pack(fill="x", padx=20, pady=10)
-        
-        ctk.CTkLabel(comment_frame, text="📝 Incident Description", 
-                    font=("Inter", 14, "bold"), 
-                    text_color="#ef4444").pack(anchor="w", padx=10, pady=5)
-        
-        self.loss_comment_text = ctk.CTkTextbox(comment_frame, height=100, 
-                                               font=("Inter", 12))
-        self.loss_comment_text.pack(fill="x", padx=10, pady=10)
-        self.loss_comment_text.configure(state="disabled")
-        
-        self.loss_tree.bind("<<TreeviewSelect>>", self.on_loss_select)
-        
-        ctk.CTkButton(self.tab_loss, text="📥 Export to CSV", 
-                     command=self.export_loss_report,
-                     fg_color="#ef4444", hover_color="#dc2626", 
-                     font=("Inter", 14, "bold")).pack(pady=10)
-
-    def setup_damage_report_tab(self):
-        ctk.CTkLabel(self.tab_damage, text="Damaged Yubikeys Report", 
-                    font=("Inter", 20, "bold"), 
-                    text_color="#8b5cf6").pack(pady=15)
-        
-        stats_frame = ctk.CTkFrame(self.tab_damage, fg_color=SLATE_GRAY, corner_radius=12)
-        stats_frame.pack(fill="x", padx=20, pady=10)
-        
-        self.damage_count_label = ctk.CTkLabel(stats_frame, text="Total Damaged: 0", 
-                                              font=("Inter", 16, "bold"), 
-                                              text_color="#8b5cf6")
-        self.damage_count_label.pack(pady=10)
-        
-        table_frame = ctk.CTkFrame(self.tab_damage, fg_color=SLATE_GRAY, corner_radius=12)
-        table_frame.pack(fill="both", expand=True, padx=20, pady=10)
-        
-        cols = ("Serial", "User", "Pipkins", "Date", "Reported By")
-        self.damage_tree = ttk.Treeview(table_frame, columns=cols, 
-                                       show='headings', height=8)
-        
-        style = ttk.Style()
-        style.configure('Damage.Treeview', 
-                       font=('Segoe UI', 11), 
-                       rowheight=30, 
-                       background=SLATE_GRAY, 
-                       fieldbackground=SLATE_GRAY, 
-                       foreground="white")
-        style.configure('Damage.Treeview.Heading', 
-                       font=('Segoe UI', 12, 'bold'), 
-                       background="#5b21b6", 
-                       foreground="#8b5cf6")
-        
-        for col in cols:
-            self.damage_tree.heading(col, text=col)
-            self.damage_tree.column(col, anchor='center', width=140)
-        
-        self.damage_tree.pack(fill="both", expand=True, padx=10, pady=10)
-        
-        comment_frame = ctk.CTkFrame(self.tab_damage, fg_color=SLATE_GRAY, corner_radius=12)
-        comment_frame.pack(fill="x", padx=20, pady=10)
-        
-        ctk.CTkLabel(comment_frame, text="📝 Damage Description", 
-                    font=("Inter", 14, "bold"), 
-                    text_color="#8b5cf6").pack(anchor="w", padx=10, pady=5)
-        
-        self.damage_comment_text = ctk.CTkTextbox(comment_frame, height=100, 
-                                                 font=("Inter", 12))
-        self.damage_comment_text.pack(fill="x", padx=10, pady=10)
-        self.damage_comment_text.configure(state="disabled")
-        
-        self.damage_tree.bind("<<TreeviewSelect>>", self.on_damage_select)
-        
-        ctk.CTkButton(self.tab_damage, text="📥 Export to CSV", 
-                     command=self.export_damage_report,
-                     fg_color="#8b5cf6", hover_color="#7c3aed", 
-                     font=("Inter", 14, "bold")).pack(pady=10)
-
-    def setup_summary_tab(self):
-        ctk.CTkLabel(self.tab_summary, text="📊 Incident Summary", 
-                    font=("Inter", 20, "bold"), 
-                    text_color="#38bdf8").pack(pady=15)
-        
-        summary_frame = ctk.CTkFrame(self.tab_summary, fg_color="transparent")
-        summary_frame.pack(fill="x", padx=20, pady=20)
-        
-        loss_card = ctk.CTkFrame(summary_frame, fg_color="#7f1d1d", corner_radius=15)
-        loss_card.pack(side="left", fill="both", expand=True, padx=10, pady=10)
-        
-        ctk.CTkLabel(loss_card, text="🔴 Total Losses", 
-                    font=("Inter", 16, "bold")).pack(pady=10)
-        self.summary_loss_label = ctk.CTkLabel(loss_card, text="0", 
-                                              font=("Inter", 36, "bold"), 
-                                              text_color="#ef4444")
-        self.summary_loss_label.pack(pady=10)
-        
-        damage_card = ctk.CTkFrame(summary_frame, fg_color="#5b21b6", corner_radius=15)
-        damage_card.pack(side="left", fill="both", expand=True, padx=10, pady=10)
-        
-        ctk.CTkLabel(damage_card, text="🟣 Total Damages", 
-                    font=("Inter", 16, "bold")).pack(pady=10)
-        self.summary_damage_label = ctk.CTkLabel(damage_card, text="0", 
-                                                font=("Inter", 36, "bold"), 
-                                                text_color="#8b5cf6")
-        self.summary_damage_label.pack(pady=10)
-        
-        total_card = ctk.CTkFrame(summary_frame, fg_color="#1e40af", corner_radius=15)
-        total_card.pack(side="left", fill="both", expand=True, padx=10, pady=10)
-        
-        ctk.CTkLabel(total_card, text="📋 Total Incidents", 
-                    font=("Inter", 16, "bold")).pack(pady=10)
-        self.summary_total_label = ctk.CTkLabel(total_card, text="0", 
-                                               font=("Inter", 36, "bold"), 
-                                               text_color="#3b82f6")
-        self.summary_total_label.pack(pady=10)
-        
-        recent_frame = ctk.CTkFrame(self.tab_summary, fg_color=SLATE_GRAY, corner_radius=12)
-        recent_frame.pack(fill="both", expand=True, padx=20, pady=20)
-        
-        ctk.CTkLabel(recent_frame, text="🕐 Recent Incidents", 
-                    font=("Inter", 16, "bold"), 
-                    text_color="#38bdf8").pack(anchor="w", padx=15, pady=10)
-        
-        self.recent_incidents_text = ctk.CTkTextbox(recent_frame, height=200, 
-                                                   font=("Inter", 11))
-        self.recent_incidents_text.pack(fill="both", expand=True, padx=15, pady=10)
-        self.recent_incidents_text.configure(state="disabled")
+            self.show_message("✅ Export Complete", f"Saved to:\n{filename}", "success")
 
     def load_reports(self):
         if not os.path.isfile(JSON_FILE):
@@ -1594,54 +1747,32 @@ class YubiDash(ctk.CTk):
         
         loss_count = 0
         damage_count = 0
-        recent_incidents = []
         
         for item in datos:
             for h in item.get('historial', []):
                 if h['accion'] == 'Loss':
                     loss_count += 1
-                    
                     self.loss_tree.insert('', 'end', values=(
                         item['serial'],
                         item.get('usuario', '-'),
                         item.get('codigo_pipkins', '-'),
                         h['fecha'],
-                        h.get('usuario', '-')
+                        h['hora']
                     ))
-                    
-                    recent_incidents.append({
-                        'date': h['fecha'],
-                        'time': h['hora'],
-                        'type': 'LOSS',
-                        'serial': item['serial'],
-                        'user': item.get('usuario', '-'),
-                        'comment': h.get('comentario', '')
-                    })
-                    
                 elif h['accion'] == 'Damage':
                     damage_count += 1
-                    
                     self.damage_tree.insert('', 'end', values=(
                         item['serial'],
                         item.get('usuario', '-'),
                         item.get('codigo_pipkins', '-'),
                         h['fecha'],
-                        h.get('usuario', '-')
+                        h['hora']
                     ))
-                    
-                    recent_incidents.append({
-                        'date': h['fecha'],
-                        'time': h['hora'],
-                        'type': 'DAMAGE',
-                        'serial': item['serial'],
-                        'user': item.get('usuario', '-'),
-                        'comment': h.get('comentario', '')
-                    })
         
         if hasattr(self, 'loss_count_label'):
-            self.loss_count_label.configure(text=f"Total Lost: {loss_count}")
+            self.loss_count_label.configure(text=str(loss_count))
         if hasattr(self, 'damage_count_label'):
-            self.damage_count_label.configure(text=f"Total Damaged: {damage_count}")
+            self.damage_count_label.configure(text=str(damage_count))
         if hasattr(self, 'summary_loss_label'):
             self.summary_loss_label.configure(text=str(loss_count))
         if hasattr(self, 'summary_damage_label'):
@@ -1649,83 +1780,38 @@ class YubiDash(ctk.CTk):
         if hasattr(self, 'summary_total_label'):
             self.summary_total_label.configure(text=str(loss_count + damage_count))
         
-        recent_incidents.sort(key=lambda x: (x['date'], x['time']), reverse=True)
-        
-        if hasattr(self, 'recent_incidents_text'):
-            self.recent_incidents_text.configure(state="normal")
-            self.recent_incidents_text.delete("1.0", "end")
-            
-            if recent_incidents:
-                for inc in recent_incidents[:10]:
-                    type_color = "🔴" if inc['type'] == 'LOSS' else "🟣"
-                    text = f"{type_color} {inc['date']} {inc['time']} - {inc['serial']}\n"
-                    text += f"   User: {inc['user']}\n"
-                    text += f"   Type: {inc['type']}\n"
-                    
-                    if inc['comment']:
-                        text += f"   💬 {inc['comment']}\n"
-                    
-                    text += "\n"
-                    self.recent_incidents_text.insert("end", text)
-            else:
-                self.recent_incidents_text.insert("end", "No incidents recorded yet.")
-            
-            self.recent_incidents_text.configure(state="disabled")
+        summary = f"""
+📊 YUBIKEY INCIDENT SUMMARY
+{'='*50}
 
-    def on_loss_select(self, event):
-        selection = self.loss_tree.selection()
-        if not selection:
-            return
-        
-        item = self.loss_tree.item(selection[0])
-        serial = item['values'][0]
-        
-        with open(JSON_FILE, 'r', encoding='utf-8') as f:
-            datos = json.load(f)
-        
-        comment = ""
-        for yubi in datos:
-            if yubi['serial'] == serial:
-                for h in yubi.get('historial', []):
-                    if h['accion'] == 'Loss':
-                        comment = h.get('comentario', 'No description provided')
-                        break
-                break
-        
-        self.loss_comment_text.configure(state="normal")
-        self.loss_comment_text.delete("1.0", "end")
-        self.loss_comment_text.insert("1.0", comment if comment else "No description provided")
-        self.loss_comment_text.configure(state="disabled")
+🔴 Total Losses: {loss_count}
+🟣 Total Damages: {damage_count}
+📋 Total Incidents: {loss_count + damage_count}
 
-    def on_damage_select(self, event):
-        selection = self.damage_tree.selection()
-        if not selection:
-            return
+📦 Total Yubikeys in System: {len(datos)}
+
+📈 BY STATE:
+{'-'*50}
+"""
         
-        item = self.damage_tree.item(selection[0])
-        serial = item['values'][0]
+        estados_count = {}
+        for item in datos:
+            estado = item['estado']
+            estados_count[estado] = estados_count.get(estado, 0) + 1
         
-        with open(JSON_FILE, 'r', encoding='utf-8') as f:
-            datos = json.load(f)
+        for estado, count in sorted(estados_count.items()):
+            summary += f"\n  • {estado}: {count}"
         
-        comment = ""
-        for yubi in datos:
-            if yubi['serial'] == serial:
-                for h in yubi.get('historial', []):
-                    if h['accion'] == 'Damage':
-                        comment = h.get('comentario', 'No description provided')
-                        break
-                break
+        summary += f"\n\n{'='*50}\nLast Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
         
-        self.damage_comment_text.configure(state="normal")
-        self.damage_comment_text.delete("1.0", "end")
-        self.damage_comment_text.insert("1.0", comment if comment else "No description provided")
-        self.damage_comment_text.configure(state="disabled")
+        if hasattr(self, 'summary_text'):
+            self.summary_text.delete("1.0", "end")
+            self.summary_text.insert("1.0", summary)
 
     def export_loss_report(self):
         filename = filedialog.asksaveasfilename(
             defaultextension=".csv",
-            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+            filetypes=[("CSV files", "*.csv")],
             initialfile=f"Loss_Report_{datetime.now().strftime('%Y%m%d')}.csv"
         )
         
@@ -1749,12 +1835,12 @@ class YubiDash(ctk.CTk):
                                 h.get('comentario', '')
                             ])
             
-            print(f"Loss report exported to {filename}")
+            self.show_message("✅ Export Complete", f"Saved to:\n{filename}", "success")
 
     def export_damage_report(self):
         filename = filedialog.asksaveasfilename(
             defaultextension=".csv",
-            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+            filetypes=[("CSV files", "*.csv")],
             initialfile=f"Damage_Report_{datetime.now().strftime('%Y%m%d')}.csv"
         )
         
@@ -1778,8 +1864,663 @@ class YubiDash(ctk.CTk):
                                 h.get('comentario', '')
                             ])
             
-            print(f"Damage report exported to {filename}")
+            self.show_message("✅ Export Complete", f"Saved to:\n{filename}", "success")
 
+    def ask_user_and_pipkins(self, serial):
+        modal = ctk.CTkToplevel(self)
+        modal.title("Complete Registration")
+        
+        modal_width = 500 if not RESPONSIVE.is_laptop else 420
+        modal_height = 420 if not RESPONSIVE.is_laptop else 370
+        modal.geometry(RESPONSIVE.center_modal(self, modal_width, modal_height))
+        modal.minsize(400, 340)
+        
+        modal.grab_set()
+        
+        main_frame = ctk.CTkFrame(modal, fg_color=SLATE_GRAY, corner_radius=18,
+                                 border_width=1, border_color="#334155")
+        main_frame.pack(padx=24, pady=24, fill="both", expand=True)
+        
+        scrollable_frame = ctk.CTkScrollableFrame(main_frame, fg_color="transparent",
+                                                 corner_radius=10)
+        scrollable_frame.pack(fill="both", expand=True, padx=15, pady=15)
+        
+        ctk.CTkLabel(scrollable_frame, text="📝 Complete Registration",
+                    font=("Inter", RESPONSIVE.get_font_size(22), "bold"),
+                    text_color="#38bdf8").pack(pady=15)
+        
+        ctk.CTkLabel(scrollable_frame, text=f"Serial: {serial}",
+                    font=("Inter", 14, "bold"),
+                    text_color=SUCCESS_GREEN).pack(pady=5)
+        
+        campos = [("User Name:", "usuario_var"), ("Pipkins Code:", "pipkins_var")]
+        vars_dict = {}
+        
+        input_frame = ctk.CTkFrame(scrollable_frame, fg_color="transparent")
+        input_frame.pack(fill="x", padx=20, pady=15)
+        
+        for label_text, var_name in campos:
+            ctk.CTkLabel(input_frame, text=label_text,
+                        font=("Inter", RESPONSIVE.get_font_size(15), "bold"),
+                        text_color="#e2e8f0").pack(anchor='w', pady=(15, 5))
+            var = ctk.StringVar()
+            entry = ctk.CTkEntry(input_frame, textvariable=var,
+                               width=RESPONSIVE.get_entry_width(),
+                               font=("Inter", RESPONSIVE.get_font_size(14)),
+                               corner_radius=10, height=45)
+            entry.pack(fill="x")
+            vars_dict[var_name] = var
+        
+        error_label = ctk.CTkLabel(scrollable_frame, text="",
+                                  text_color="#ef4444",
+                                  font=("Inter", 13, "bold"))
+        error_label.pack(pady=(0, 2))
+        
+        result = {'ok': False}
+        
+        def registrar():
+            usuario = vars_dict['usuario_var'].get().strip()
+            pipkins = vars_dict['pipkins_var'].get().strip()
+            if not usuario or not pipkins:
+                error_label.configure(text="⚠️ All fields are required")
+                return
+            self.save_new_yubikey(serial, usuario, pipkins)
+            result['ok'] = True
+            modal.destroy()
+        
+        ctk.CTkButton(scrollable_frame, text="✅ Register Yubikey", command=registrar,
+                     fg_color="#38bdf8", hover_color="#0ea5e9",
+                     font=("Inter", RESPONSIVE.get_font_size(16), "bold"),
+                     corner_radius=12, height=45, width=200).pack(pady=20)
+
+    def save_new_yubikey(self, serial, usuario, pipkins):
+        now = datetime.now()
+        nueva = {
+            "serial": serial,
+            "usuario": usuario,
+            "codigo_pipkins": pipkins,
+            "estado": "In Use",
+            "ultima_conexion": now.strftime("%Y-%m-%d"),
+            "historial": [{
+                "accion": "Registro",
+                "fecha": now.strftime("%Y-%m-%d"),
+                "hora": now.strftime("%H:%M:%S"),
+                "usuario": usuario,
+                "codigo_pipkins": pipkins,
+                "estado": "In Use",
+                "comentario": "Initial registration"
+            }]
+        }
+        
+        with open(JSON_FILE, 'r', encoding='utf-8') as f:
+            datos = json.load(f)
+        datos.append(nueva)
+        with open(JSON_FILE, 'w', encoding='utf-8') as f:
+            json.dump(datos, f, indent=4, ensure_ascii=False)
+        
+        self.label_nueva.configure(text="✅ Registered Successfully!",
+                                  text_color=SUCCESS_GREEN,
+                                  font=("Inter", RESPONSIVE.get_font_size(14), "bold"))
+        self.entry_nueva.delete(0, 'end')
+        self.load_recent_data('nueva')
+        self.load_inventory_table()
+        self.after(3000, lambda: self.label_nueva.configure(text=""))
+
+    def setup_recent_table_responsive(self, parent, tipo):
+        table_card = ctk.CTkFrame(parent, fg_color=SLATE_GRAY,
+                                 corner_radius=15, border_width=1,
+                                 border_color="#334155")
+        table_card.pack(fill="both", expand=True, padx=40, pady=20)
+        
+        header = ctk.CTkFrame(table_card, fg_color="transparent")
+        header.pack(fill="x", padx=20, pady=(15, 10))
+        
+        ctk.CTkLabel(header, text="📋 Recent Movements",
+                    font=("Inter", RESPONSIVE.get_font_size(16), "bold"),
+                    text_color="#38bdf8").pack(anchor="w")
+        
+        tree_frame = ctk.CTkFrame(table_card, fg_color="#0f172a",
+                                 corner_radius=10)
+        tree_frame.pack(fill="both", expand=True, padx=20, pady=10)
+        
+        columns = ("Serial", "Pipkins", "Action", "Date", "Time")
+        
+        style = ttk.Style()
+        style.theme_use('clam')
+        
+        style.configure(f'{tipo}.Treeview',
+                       font=('Inter', RESPONSIVE.get_font_size(11)),
+                       rowheight=32,
+                       background="#0f172a",
+                       fieldbackground="#0f172a",
+                       foreground="#e2e8f0",
+                       borderwidth=0)
+        
+        style.configure(f'{tipo}.Treeview.Heading',
+                       font=('Inter', RESPONSIVE.get_font_size(12), "bold"),
+                       background="#1e293b",
+                       foreground="#38bdf8",
+                       borderwidth=0)
+        
+        style.map(f'{tipo}.Treeview',
+                 background=[('selected', '#3b82f6')],
+                 foreground=[('selected', 'white')])
+        
+        tree = ttk.Treeview(tree_frame, columns=columns, show='headings',
+                           height=6, style=f'{tipo}.Treeview')
+        
+        col_widths = {
+            "Serial": 180,
+            "Pipkins": 120,
+            "Action": 250,
+            "Date": 120,
+            "Time": 100
+        }
+        
+        for col in columns:
+            tree.heading(col, text=col, anchor="w")
+            tree.column(col, anchor="w", width=col_widths.get(col, 150), minwidth=80)
+        
+        scrollbar_y = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
+        scrollbar_x = ttk.Scrollbar(tree_frame, orient="horizontal", command=tree.xview)
+        tree.configure(yscrollcommand=scrollbar_y.set, xscrollcommand=scrollbar_x.set)
+        
+        tree.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
+        scrollbar_y.grid(row=0, column=1, sticky="ns", pady=5)
+        scrollbar_x.grid(row=1, column=0, sticky="ew", padx=5)
+        
+        tree_frame.grid_rowconfigure(0, weight=1)
+        tree_frame.grid_columnconfigure(0, weight=1)
+        
+        setattr(self, f"tree_recent_{tipo}", tree)
+        self.load_recent_data(tipo)
+
+    def setup_inv_view(self):
+        header_frame = ctk.CTkFrame(self.view_inv, fg_color="transparent")
+        header_frame.pack(fill="x", padx=40, pady=(20, 10))
+        
+        ctk.CTkLabel(header_frame, text="📋 General Inventory",
+                    font=("Inter", RESPONSIVE.get_font_size(32), "bold"),
+                    text_color="#38bdf8").pack()
+        
+        filter_card = ctk.CTkFrame(self.view_inv, fg_color=SLATE_GRAY,
+                                  corner_radius=15, border_width=1,
+                                  border_color="#334155")
+        filter_card.pack(fill="x", padx=40, pady=15)
+        
+        filter_frame = ctk.CTkFrame(filter_card, fg_color="transparent")
+        filter_frame.pack(fill="x", padx=25, pady=15)
+        
+        ctk.CTkLabel(filter_frame, text="🔍 Filter by State:",
+                    font=("Inter", RESPONSIVE.get_font_size(14), "bold"),
+                    text_color="#e2e8f0").pack(anchor="w", pady=(0, 10))
+        
+        radio_frame = ctk.CTkFrame(filter_frame, fg_color="transparent")
+        radio_frame.pack(fill="x")
+        
+        self.filter_var = ctk.StringVar(value="All")
+        estados = ["All", "Available", "In Use", "On Break", "On Lunch", "Loss", "Damage"]
+        colors = {"All": "#64748b", "Available": "#10b981", "In Use": "#3b82f6",
+                 "On Break": "#f59e0b", "On Lunch": "#f97316", "Loss": "#ef4444", "Damage": "#8b5cf6"}
+        
+        for i, estado in enumerate(estados):
+            ctk.CTkRadioButton(radio_frame, text=estado,
+                             variable=self.filter_var,
+                             value=estado,
+                             command=self.filter_inventory,
+                             fg_color=colors[estado],
+                             font=("Inter", 12)).grid(row=i//4, column=i%4, padx=10, pady=5)
+        
+        search_frame = ctk.CTkFrame(filter_card, fg_color="transparent")
+        search_frame.pack(fill="x", padx=25, pady=(0, 15))
+        
+        self.search_var = ctk.StringVar()
+        search_entry = ctk.CTkEntry(search_frame,
+                                   textvariable=self.search_var,
+                                   placeholder_text="🔎 Search by serial or user...",
+                                   width=400,
+                                   height=40,
+                                   font=("Inter", 13))
+        search_entry.pack(side="left", padx=(0, 10))
+        search_entry.bind("<KeyRelease>", lambda e: self.filter_inventory())
+        
+        ctk.CTkButton(search_frame, text="📋 View Details",
+                     command=self.show_item_details,
+                     fg_color="#3b82f6", hover_color="#2563eb",
+                     font=("Inter", 13, "bold"),
+                     height=40, width=140).pack(side="left", padx=5)
+        
+        ctk.CTkButton(search_frame, text="📥 Export CSV",
+                     command=self.export_inventory,
+                     fg_color="#10b981", hover_color="#059669",
+                     font=("Inter", 13, "bold"),
+                     height=40, width=140).pack(side="left", padx=5)
+
+        table_card = ctk.CTkFrame(self.view_inv, fg_color=SLATE_GRAY,
+                                 corner_radius=15, border_width=1,
+                                 border_color="#334155")
+        table_card.pack(fill="both", expand=True, padx=40, pady=15)
+        
+        tree_frame = ctk.CTkFrame(table_card, fg_color="#0f172a",
+                                 corner_radius=10)
+        tree_frame.pack(fill="both", expand=True, padx=20, pady=15)
+        
+        cols = ("Serial", "User", "Pipkins", "State", "Last Connection")
+        
+        self.inv_tree = ttk.Treeview(tree_frame, columns=cols,
+                                    show='headings', style='Custom.Treeview')
+        
+        style = ttk.Style()
+        style.configure('Custom.Treeview',
+                       font=('Inter', RESPONSIVE.get_font_size(12)),
+                       rowheight=38,
+                       background="#0f172a",
+                       fieldbackground="#0f172a",
+                       foreground="#e2e8f0")
+        style.configure('Custom.Treeview.Heading',
+                       font=('Inter', RESPONSIVE.get_font_size(13), "bold"),
+                       background="#1e293b",
+                       foreground="#38bdf8")
+        
+        style.map('Custom.Treeview',
+                 background=[('selected', '#3b82f6')],
+                 foreground=[('selected', 'white')])
+        
+        for estado, color in ESTADO_COLORES.items():
+            self.inv_tree.tag_configure(estado, background=color, foreground="white")
+        
+        col_widths_inv = {
+            "Serial": 180,
+            "User": 200,
+            "Pipkins": 120,
+            "State": 140,
+            "Last Connection": 150
+        }
+        
+        for col in cols:
+            self.inv_tree.heading(col, text=col, anchor="w")
+            self.inv_tree.column(col, anchor="w", width=col_widths_inv.get(col, 150), minwidth=100)
+        
+        scrollbar_y = ttk.Scrollbar(tree_frame, orient="vertical", command=self.inv_tree.yview)
+        scrollbar_x = ttk.Scrollbar(tree_frame, orient="horizontal", command=self.inv_tree.xview)
+        self.inv_tree.configure(yscrollcommand=scrollbar_y.set, xscrollcommand=scrollbar_x.set)
+        
+        self.inv_tree.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
+        scrollbar_y.grid(row=0, column=1, sticky="ns", pady=5)
+        scrollbar_x.grid(row=1, column=0, sticky="ew", padx=5)
+        
+        tree_frame.grid_rowconfigure(0, weight=1)
+        tree_frame.grid_columnconfigure(0, weight=1)
+        
+        self.inv_tree.bind("<Double-1>", lambda e: self.show_item_details())
+
+    def ask_return_comment(self, serial):
+        modal = ctk.CTkToplevel(self)
+        modal.title("Return Yubikey")
+        
+        modal_width = 500 if not RESPONSIVE.is_laptop else 420
+        modal_height = 350 if not RESPONSIVE.is_laptop else 300
+        modal.geometry(RESPONSIVE.center_modal(self, modal_width, modal_height))
+        modal.minsize(380, 280)
+        
+        modal.grab_set()
+        
+        main_frame = ctk.CTkFrame(modal, fg_color=SLATE_GRAY, corner_radius=18,
+                                 border_width=1, border_color="#334155")
+        main_frame.pack(fill="both", expand=True, padx=20, pady=20)
+        
+        scrollable_frame = ctk.CTkScrollableFrame(main_frame, fg_color="transparent",
+                                                 corner_radius=10)
+        scrollable_frame.pack(fill="both", expand=True, padx=15, pady=15)
+        
+        ctk.CTkLabel(scrollable_frame, text="🔄 Return Yubikey",
+                    font=("Inter", RESPONSIVE.get_font_size(20), "bold"),
+                    text_color="#8b5cf6").pack(pady=15)
+        
+        ctk.CTkLabel(scrollable_frame, text="Optional comment (why is it being returned):",
+                    font=("Inter", RESPONSIVE.get_font_size(13)),
+                    text_color="#94a3b8").pack(pady=10)
+        
+        comment_text = ctk.CTkTextbox(scrollable_frame, width=400, height=100,
+                                     font=("Inter", RESPONSIVE.get_font_size(13)),
+                                     corner_radius=10)
+        comment_text.pack(pady=10, padx=30)
+        try:
+            modal.after(100, lambda: comment_text.focus())
+        except:
+            pass
+        
+        result = {'ok': False, 'comentario': ''}
+        
+        def aceptar():
+            comentario = comment_text.get("1.0", "end-1c").strip()
+            result['ok'] = True
+            result['comentario'] = comentario
+            self.save_return_yubikey(serial, comentario)
+            modal.destroy()
+        
+        btn_frame = ctk.CTkFrame(scrollable_frame, fg_color="transparent")
+        btn_frame.pack(pady=15)
+        
+        ctk.CTkButton(btn_frame, text="✅ Return", command=aceptar,
+                     fg_color="#ef4444", hover_color="#dc2626",
+                     font=("Inter", RESPONSIVE.get_font_size(15), "bold"),
+                     width=130, height=40, corner_radius=10).pack(side="left", padx=10)
+        ctk.CTkButton(btn_frame, text="Skip", command=lambda: aceptar(),
+                     fg_color="#475569", hover_color="#64748b",
+                     font=("Inter", RESPONSIVE.get_font_size(14)),
+                     width=100, height=40, corner_radius=10).pack(side="left", padx=10)
+
+    def save_return_yubikey(self, serial, comentario):
+        with open(JSON_FILE, 'r', encoding='utf-8') as f:
+            datos = json.load(f)
+        
+        for item in datos:
+            if item['serial'].upper() == serial.upper():
+                now = datetime.now()
+                usuario_anterior = item.get('usuario', 'N/A')
+                
+                item['estado'] = 'Available'
+                item['usuario'] = ''
+                item['codigo_pipkins'] = ''
+                item['ultima_conexion'] = now.strftime("%Y-%m-%d")
+                
+                item['historial'].append({
+                    'accion': f'Return (previous: {usuario_anterior})',
+                    'fecha': now.strftime("%Y-%m-%d"),
+                    'hora': now.strftime("%H:%M:%S"),
+                    'estado': 'Available',
+                    'usuario': '',
+                    'codigo_pipkins': '',
+                    'comentario': comentario or "User returned yubikey"
+                })
+                break
+        
+        with open(JSON_FILE, 'w', encoding='utf-8') as f:
+            json.dump(datos, f, indent=4, ensure_ascii=False)
+        
+        self.label_asignacion.configure(text="✅ Returned successfully!",
+                                       text_color=SUCCESS_GREEN,
+                                       font=("Inter", RESPONSIVE.get_font_size(14), "bold"))
+        self.entry_asignacion.delete(0, 'end')
+        self.load_recent_data('asignacion')
+        self.load_inventory_table()
+        self.after(3000, lambda: self.label_asignacion.configure(text=""))
+
+    def ask_nuevo_usuario_pipkins(self, serial):
+        modal = ctk.CTkToplevel(self)
+        modal.title("Assign to New User")
+        
+        modal_width = 500 if not RESPONSIVE.is_laptop else 420
+        modal_height = 400 if not RESPONSIVE.is_laptop else 350
+        modal.geometry(RESPONSIVE.center_modal(self, modal_width, modal_height))
+        modal.minsize(400, 320)
+        
+        modal.grab_set()
+        
+        main_frame = ctk.CTkFrame(modal, fg_color=SLATE_GRAY, corner_radius=18,
+                                 border_width=1, border_color="#334155")
+        main_frame.pack(padx=24, pady=24, fill="both", expand=True)
+        
+        scrollable_frame = ctk.CTkScrollableFrame(main_frame, fg_color="transparent",
+                                                 corner_radius=10)
+        scrollable_frame.pack(fill="both", expand=True, padx=15, pady=15)
+        
+        ctk.CTkLabel(scrollable_frame, text="🔄 Assign Yubikey",
+                    font=("Inter", RESPONSIVE.get_font_size(22), "bold"),
+                    text_color="#38bdf8").pack(pady=15)
+        
+        ctk.CTkLabel(scrollable_frame, text=f"Serial: {serial}",
+                    font=("Inter", 14, "bold"),
+                    text_color=SUCCESS_GREEN).pack(pady=5)
+        
+        campos = [("User Name:", "usuario_var"), ("Pipkins Code:", "pipkins_var")]
+        vars_dict = {}
+        
+        input_frame = ctk.CTkFrame(scrollable_frame, fg_color="transparent")
+        input_frame.pack(fill="x", padx=20, pady=15)
+        
+        for label_text, var_name in campos:
+            ctk.CTkLabel(input_frame, text=label_text,
+                        font=("Inter", RESPONSIVE.get_font_size(15), "bold"),
+                        text_color="#e2e8f0").pack(anchor='w', pady=(15, 5))
+            var = ctk.StringVar()
+            entry = ctk.CTkEntry(input_frame, textvariable=var,
+                               width=RESPONSIVE.get_entry_width(),
+                               font=("Inter", RESPONSIVE.get_font_size(14)),
+                               corner_radius=10, height=45)
+            entry.pack(fill="x")
+            vars_dict[var_name] = var
+        
+        error_label = ctk.CTkLabel(scrollable_frame, text="",
+                                  text_color="#ef4444",
+                                  font=("Inter", 13, "bold"))
+        error_label.pack(pady=(0, 2))
+        
+        result = {'ok': False}
+        
+        def asignar():
+            usuario = vars_dict['usuario_var'].get().strip()
+            pipkins = vars_dict['pipkins_var'].get().strip()
+            if not usuario or not pipkins:
+                error_label.configure(text="⚠️ All fields are required")
+                return
+            self.save_assign_yubikey(serial, usuario, pipkins)
+            result['ok'] = True
+            modal.destroy()
+        
+        ctk.CTkButton(scrollable_frame, text="✅ Assign Yubikey", command=asignar,
+                     fg_color="#38bdf8", hover_color="#0ea5e9",
+                     font=("Inter", RESPONSIVE.get_font_size(16), "bold"),
+                     corner_radius=12, height=45, width=200).pack(pady=20)
+
+    def save_assign_yubikey(self, serial, usuario, pipkins):
+        now = datetime.now()
+        
+        with open(JSON_FILE, 'r', encoding='utf-8') as f:
+            datos = json.load(f)
+        
+        for item in datos:
+            if item['serial'].upper() == serial.upper():
+                item['estado'] = 'In Use'
+                item['usuario'] = usuario
+                item['codigo_pipkins'] = pipkins
+                item['ultima_conexion'] = now.strftime("%Y-%m-%d")
+                
+                item['historial'].append({
+                    'accion': f'Assign to {usuario}',
+                    'fecha': now.strftime("%Y-%m-%d"),
+                    'hora': now.strftime("%H:%M:%S"),
+                    'estado': 'In Use',
+                    'usuario': usuario,
+                    'codigo_pipkins': pipkins,
+                    'comentario': 'Assigned via Assign/Return panel'
+                })
+                break
+        
+        with open(JSON_FILE, 'w', encoding='utf-8') as f:
+            json.dump(datos, f, indent=4, ensure_ascii=False)
+        
+        self.label_asignacion.configure(text="✅ Assigned successfully!",
+                                       text_color=SUCCESS_GREEN,
+                                       font=("Inter", RESPONSIVE.get_font_size(14), "bold"))
+        self.entry_asignacion.delete(0, 'end')
+        self.load_recent_data('asignacion')
+        self.load_inventory_table()
+        self.after(3000, lambda: self.label_asignacion.configure(text=""))
+
+    def ask_loss_damage_type(self, serial, found_by, search_value):
+        modal = ctk.CTkToplevel(self)
+        modal.title("Select Incident Type")
+        
+        modal_width = 450 if not RESPONSIVE.is_laptop else 380
+        modal_height = 350 if not RESPONSIVE.is_laptop else 300
+        modal.geometry(RESPONSIVE.center_modal(self, modal_width, modal_height))
+        modal.minsize(350, 280)
+        
+        modal.grab_set()
+        
+        main_frame = ctk.CTkFrame(modal, fg_color=SLATE_GRAY, corner_radius=18,
+                                 border_width=1, border_color="#334155")
+        main_frame.pack(fill="both", expand=True, padx=20, pady=20)
+        
+        scrollable_frame = ctk.CTkScrollableFrame(main_frame, fg_color="transparent",
+                                                 corner_radius=10)
+        scrollable_frame.pack(fill="both", expand=True, padx=15, pady=15)
+        
+        ctk.CTkLabel(scrollable_frame, text="⚠️ Select Incident Type",
+                    font=("Inter", RESPONSIVE.get_font_size(20), "bold"),
+                    text_color="#38bdf8").pack(pady=20)
+        
+        if found_by:
+            ctk.CTkLabel(scrollable_frame, text=f"Found via {found_by}: {search_value}",
+                        font=("Inter", 12),
+                        text_color="#94a3b8").pack(pady=(0, 10))
+        
+        tipo_var = ctk.StringVar(value="Loss")
+        
+        options_frame = ctk.CTkFrame(scrollable_frame, fg_color=SLATE_GRAY,
+                                    corner_radius=12, border_width=1,
+                                    border_color="#334155")
+        options_frame.pack(fill="x", padx=20, pady=15)
+        
+        ctk.CTkRadioButton(options_frame, text="🔴 Loss", variable=tipo_var, value="Loss",
+                         font=("Inter", RESPONSIVE.get_font_size(16)),
+                         fg_color="#ef4444").pack(anchor="w", padx=25, pady=12)
+        ctk.CTkRadioButton(options_frame, text="🟣 Damage", variable=tipo_var, value="Damage",
+                         font=("Inter", RESPONSIVE.get_font_size(16)),
+                         fg_color="#8b5cf6").pack(anchor="w", padx=25, pady=12)
+        
+        def confirmar():
+            tipo = tipo_var.get()
+            self.ask_loss_damage_comment(serial, tipo, found_by, search_value)
+            modal.destroy()
+        
+        btn_frame = ctk.CTkFrame(scrollable_frame, fg_color="transparent")
+        btn_frame.pack(pady=20)
+        
+        ctk.CTkButton(btn_frame, text="✅ Confirm", command=confirmar,
+                     fg_color="#38bdf8", hover_color="#0ea5e9",
+                     font=("Inter", RESPONSIVE.get_font_size(15), "bold"),
+                     width=150, height=40, corner_radius=10).pack(side="left", padx=10)
+        ctk.CTkButton(btn_frame, text="Cancel", command=modal.destroy,
+                     fg_color="#475569", hover_color="#64748b",
+                     font=("Inter", RESPONSIVE.get_font_size(14)),
+                     width=120, height=40, corner_radius=10).pack(side="left", padx=10)
+
+    def ask_loss_damage_comment(self, serial, tipo_incidente, found_by, search_value):
+        modal = ctk.CTkToplevel(self)
+        modal.title(f"Report {tipo_incidente}")
+        
+        modal_width = 550 if not RESPONSIVE.is_laptop else 450
+        modal_height = 450 if not RESPONSIVE.is_laptop else 400
+        modal.geometry(RESPONSIVE.center_modal(self, modal_width, modal_height))
+        modal.minsize(400, 350)
+        
+        modal.grab_set()
+        
+        main_frame = ctk.CTkFrame(modal, fg_color=SLATE_GRAY, corner_radius=18,
+                                 border_width=1, border_color="#334155")
+        main_frame.pack(fill="both", expand=True, padx=20, pady=20)
+        
+        scrollable_frame = ctk.CTkScrollableFrame(main_frame, fg_color="transparent",
+                                                 corner_radius=10)
+        scrollable_frame.pack(fill="both", expand=True, padx=15, pady=15)
+        
+        ctk.CTkLabel(scrollable_frame, text=f"📝 {tipo_incidente} Report",
+                    font=("Inter", RESPONSIVE.get_font_size(22), "bold"),
+                    text_color="#ef4444" if tipo_incidente == "Loss" else "#8b5cf6").pack(pady=15)
+        
+        item_data = self.find_yubikey(serial)
+        if item_data:
+            usuario = item_data.get('usuario', 'N/A') or 'N/A'
+            pipkins = item_data.get('codigo_pipkins', 'N/A') or 'N/A'
+            
+            info_text = f"""Serial: {serial}
+User: {usuario}
+Pipkins: {pipkins}
+Found via: {found_by} ({search_value})"""
+            
+            ctk.CTkLabel(scrollable_frame, text=info_text,
+                        font=("Inter", 13),
+                        text_color="#94a3b8",
+                        justify="left").pack(pady=10)
+        
+        ctk.CTkLabel(scrollable_frame, text="Describe what happened:",
+                    font=("Inter", RESPONSIVE.get_font_size(14), "bold"),
+                    text_color="#e2e8f0").pack(anchor="w", padx=30, pady=(15, 5))
+        
+        comment_text = ctk.CTkTextbox(scrollable_frame, width=400, height=120,
+                                     font=("Inter", RESPONSIVE.get_font_size(13)),
+                                     corner_radius=10)
+        comment_text.pack(pady=10, padx=30)
+        try:
+            modal.after(100, lambda: comment_text.focus())
+        except:
+            pass
+        
+        result = {'ok': False, 'comentario': ''}
+        
+        def aceptar():
+            comentario = comment_text.get("1.0", "end-1c").strip()
+            result['ok'] = True
+            result['comentario'] = comentario
+            self.save_loss_damage_report(serial, tipo_incidente, comentario)
+            modal.destroy()
+        
+        btn_frame = ctk.CTkFrame(scrollable_frame, fg_color="transparent")
+        btn_frame.pack(pady=15)
+        
+        ctk.CTkButton(btn_frame, text="✅ Submit", command=aceptar,
+                     fg_color="#38bdf8", hover_color="#0ea5e9",
+                     font=("Inter", RESPONSIVE.get_font_size(15), "bold"),
+                     width=130, height=40, corner_radius=10).pack(side="left", padx=10)
+        ctk.CTkButton(btn_frame, text="Skip", command=lambda: aceptar(),
+                     fg_color="#475569", hover_color="#64748b",
+                     font=("Inter", RESPONSIVE.get_font_size(14)),
+                     width=100, height=40, corner_radius=10).pack(side="left", padx=10)
+
+    def save_loss_damage_report(self, serial, tipo_incidente, comentario):
+        with open(JSON_FILE, 'r', encoding='utf-8') as f:
+            datos = json.load(f)
+        
+        for item in datos:
+            if item['serial'].upper() == serial.upper():
+                now = datetime.now()
+                item['estado'] = tipo_incidente
+                item['ultima_conexion'] = now.strftime("%Y-%m-%d")
+                
+                item['historial'].append({
+                    'accion': tipo_incidente,
+                    'fecha': now.strftime("%Y-%m-%d"),
+                    'hora': now.strftime("%H:%M:%S"),
+                    'estado': tipo_incidente,
+                    'usuario': item.get('usuario', ''),
+                    'codigo_pipkins': item.get('codigo_pipkins', ''),
+                    'comentario': comentario or f"Reported via {tipo_incidente.lower()} panel"
+                })
+                break
+        
+        with open(JSON_FILE, 'w', encoding='utf-8') as f:
+            json.dump(datos, f, indent=4, ensure_ascii=False)
+        
+        self.label_perdida.configure(text=f"✅ {tipo_incidente} reported!",
+                                    text_color=SUCCESS_GREEN,
+                                    font=("Inter", RESPONSIVE.get_font_size(14), "bold"))
+        self.entry_perdida.delete(0, 'end')
+        self.load_recent_data('perdida')
+        self.load_inventory_table()
+        self.after(3000, lambda: self.label_perdida.configure(text=""))
+
+    def on_closing(self):
+        if self.scanner.is_connected:
+            self.scanner.disconnect()
+        self.destroy()
+
+# ============================================================================
+# PUNTO DE ENTRADA
+# ============================================================================
 if __name__ == "__main__":
     app = YubiDash()
+    app.protocol("WM_DELETE_WINDOW", app.on_closing)
     app.mainloop()

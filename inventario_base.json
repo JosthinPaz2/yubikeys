@@ -453,8 +453,8 @@
         "serial": "YK-015",
         "usuario": "Alejandro Vargas",
         "codigo_pipkins": "617115",
-        "estado": "In Use",
-        "ultima_conexion": "2025-01-15",
+        "estado": "Loss",
+        "ultima_conexion": "2026-04-01",
         "historial": [
             {
                 "fecha": "2025-01-10",
@@ -482,6 +482,150 @@
                 "usuario": "Alejandro Vargas",
                 "codigo_pipkins": "617115",
                 "comentario": ""
+            },
+            {
+                "fecha": "2026-04-01",
+                "hora": "12:33:28",
+                "accion": "Check-in to Break",
+                "estado": "On Break",
+                "usuario": "Alejandro Vargas",
+                "codigo_pipkins": "617115",
+                "comentario": ""
+            },
+            {
+                "fecha": "2026-04-01",
+                "hora": "12:33:36",
+                "accion": "Check-out from Break",
+                "estado": "In Use",
+                "usuario": "Alejandro Vargas",
+                "codigo_pipkins": "617115",
+                "comentario": ""
+            },
+            {
+                "accion": "Loss",
+                "fecha": "2026-04-01",
+                "hora": "14:44:57",
+                "estado": "Loss",
+                "usuario": "Alejandro Vargas",
+                "codigo_pipkins": "617115",
+                "comentario": "sdsad"
+            }
+        ]
+    },
+    {
+        "serial": "YK-025",
+        "usuario": "asdasdasd",
+        "codigo_pipkins": "123456",
+        "estado": "Damage",
+        "ultima_conexion": "2026-04-01",
+        "historial": [
+            {
+                "accion": "Registro",
+                "fecha": "2026-04-01",
+                "hora": "13:07:37",
+                "usuario": "juanka",
+                "codigo_pipkins": "6152484",
+                "estado": "In Use",
+                "comentario": "Initial registration"
+            },
+            {
+                "accion": "Check-in to Break",
+                "fecha": "2026-04-01",
+                "hora": "13:08:26",
+                "estado": "On Break",
+                "usuario": "juanka",
+                "codigo_pipkins": "6152484",
+                "comentario": "Check-in to Break"
+            },
+            {
+                "accion": "Check-out from Break/Lunch",
+                "fecha": "2026-04-01",
+                "hora": "13:08:40",
+                "estado": "In Use",
+                "usuario": "juanka",
+                "codigo_pipkins": "6152484",
+                "comentario": "Check-out from Break/Lunch"
+            },
+            {
+                "accion": "Return (previous: juanka)",
+                "fecha": "2026-04-01",
+                "hora": "13:09:03",
+                "estado": "Available",
+                "usuario": "",
+                "codigo_pipkins": "",
+                "comentario": "User returned yubikey"
+            },
+            {
+                "accion": "Assign to juankamilo arias",
+                "fecha": "2026-04-01",
+                "hora": "13:09:48",
+                "estado": "In Use",
+                "usuario": "juankamilo arias",
+                "codigo_pipkins": "616934",
+                "comentario": "Assigned via Assign/Return panel"
+            },
+            {
+                "accion": "Check-in to Break",
+                "fecha": "2026-04-01",
+                "hora": "14:43:28",
+                "estado": "On Break",
+                "usuario": "juankamilo arias",
+                "codigo_pipkins": "616934",
+                "comentario": "Check-in to Break"
+            },
+            {
+                "accion": "Check-out from Break/Lunch",
+                "fecha": "2026-04-01",
+                "hora": "14:43:35",
+                "estado": "In Use",
+                "usuario": "juankamilo arias",
+                "codigo_pipkins": "616934",
+                "comentario": "Check-out from Break/Lunch"
+            },
+            {
+                "accion": "Return (previous: juankamilo arias)",
+                "fecha": "2026-04-01",
+                "hora": "14:43:49",
+                "estado": "Available",
+                "usuario": "",
+                "codigo_pipkins": "",
+                "comentario": "falta de empleo"
+            },
+            {
+                "accion": "Assign to asdasdasd",
+                "fecha": "2026-04-01",
+                "hora": "14:44:06",
+                "estado": "In Use",
+                "usuario": "asdasdasd",
+                "codigo_pipkins": "123456",
+                "comentario": "Assigned via Assign/Return panel"
+            },
+            {
+                "accion": "Damage",
+                "fecha": "2026-04-01",
+                "hora": "14:44:33",
+                "estado": "Damage",
+                "usuario": "asdasdasd",
+                "codigo_pipkins": "123456",
+                "comentario": "Reported via damage panel"
+            }
+        ]
+    },
+    {
+        "serial": "YK-030",
+        "usuario": "asdasdasd",
+        "codigo_pipkins": "1234569",
+        "estado": "In Use",
+        "ultima_conexion": "2026-04-01",
+        "historial": [
+            {
+                "accion": "Registro",
+                "fecha": "2026-04-01",
+                "hora": "14:49:49",
+                "usuario": "asdasdasd",
+                "codigo_pipkins": "1234569",
+                "estado": "In Use",
+                "comentario": "Initial registration"
             }
         ]
     }
