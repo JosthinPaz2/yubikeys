@@ -9,7 +9,7 @@ import os
 import tkinter.ttk as ttk
 from datetime import datetime
 import csv
-from tkinter import filedialog
+from tkinter import filedialog, messagebox
 import serial
 import serial.tools.list_ports
 import threading
@@ -1070,6 +1070,191 @@ class YubiDash(ctk.CTk):
                      fg_color="#475569", hover_color="#64748b",
                      font=("Inter", RESPONSIVE.get_font_size(14), "bold"),
                      width=150, height=40, corner_radius=10).pack(pady=20)
+
+    def get_selected_inventory_item(self):
+        selected = self.inv_tree.selection()
+        if not selected:
+            self.show_message("⚠️ Select Item", "Please select a yubikey from the table", "warning")
+            return None, None
+
+        item = self.inv_tree.item(selected[0])
+        values = item.get('values', [])
+        if not values:
+            self.show_message("⚠️ Select Item", "The selected row is empty", "warning")
+            return None, None
+
+        serial = values[0]
+        yubi_data = self.find_yubikey(serial)
+        if not yubi_data:
+            self.show_message("❌ Not Found", "The selected yubikey was not found in the inventory file", "error")
+            return None, None
+
+        return serial, yubi_data
+
+    def refresh_inventory_display(self):
+        if hasattr(self, 'filter_var') and hasattr(self, 'search_var'):
+            self.filter_inventory()
+        else:
+            self.load_inventory_table()
+
+    def edit_selected_inventory_item(self):
+        original_serial, yubi_data = self.get_selected_inventory_item()
+        if not yubi_data:
+            return
+
+        modal = ctk.CTkToplevel(self)
+        modal.title(f"Edit Inventory - {original_serial}")
+
+        modal_width = 520 if not RESPONSIVE.is_laptop else 460
+        modal_height = 500 if not RESPONSIVE.is_laptop else 440
+        modal.geometry(RESPONSIVE.center_modal(self, modal_width, modal_height))
+        modal.minsize(420, 380)
+        modal.grab_set()
+
+        main_frame = ctk.CTkFrame(modal, fg_color=SLATE_GRAY, corner_radius=18,
+                                 border_width=1, border_color="#334155")
+        main_frame.pack(fill="both", expand=True, padx=20, pady=20)
+
+        scrollable_frame = ctk.CTkScrollableFrame(main_frame, fg_color="transparent",
+                                                 corner_radius=10)
+        scrollable_frame.pack(fill="both", expand=True, padx=15, pady=15)
+
+        ctk.CTkLabel(scrollable_frame, text=f"✏️ Edit {original_serial}",
+                    font=("Inter", RESPONSIVE.get_font_size(20), "bold"),
+                    text_color="#f59e0b").pack(pady=(10, 20))
+
+        form_frame = ctk.CTkFrame(scrollable_frame, fg_color="transparent")
+        form_frame.pack(fill="x", padx=10)
+
+        ctk.CTkLabel(form_frame, text="Serial", font=("Inter", 13, "bold"),
+                    text_color="#e2e8f0").pack(anchor="w", pady=(0, 6))
+        serial_var = ctk.StringVar(value=yubi_data.get('serial', ''))
+        serial_entry = ctk.CTkEntry(form_frame, textvariable=serial_var,
+                                   font=("Inter", 13), height=40)
+        serial_entry.pack(fill="x", pady=(0, 12))
+
+        ctk.CTkLabel(form_frame, text="User", font=("Inter", 13, "bold"),
+                    text_color="#e2e8f0").pack(anchor="w", pady=(0, 6))
+        user_var = ctk.StringVar(value=yubi_data.get('usuario', '') or '')
+        user_entry = ctk.CTkEntry(form_frame, textvariable=user_var,
+                                 font=("Inter", 13), height=40)
+        user_entry.pack(fill="x", pady=(0, 12))
+
+        ctk.CTkLabel(form_frame, text="Pipkins", font=("Inter", 13, "bold"),
+                    text_color="#e2e8f0").pack(anchor="w", pady=(0, 6))
+        pipkins_var = ctk.StringVar(value=yubi_data.get('codigo_pipkins', '') or '')
+        pipkins_entry = ctk.CTkEntry(form_frame, textvariable=pipkins_var,
+                                    font=("Inter", 13), height=40)
+        pipkins_entry.pack(fill="x", pady=(0, 12))
+
+        ctk.CTkLabel(form_frame, text="State", font=("Inter", 13, "bold"),
+                    text_color="#e2e8f0").pack(anchor="w", pady=(0, 6))
+        state_options = ["Available", "In Use", "On Break", "On Lunch", "Loss", "Damage"]
+        current_state = yubi_data.get('estado', 'Available')
+        if current_state not in state_options:
+            state_options = [current_state] + state_options
+        state_var = ctk.StringVar(value=current_state)
+        state_menu = ctk.CTkOptionMenu(form_frame, variable=state_var, values=state_options,
+                                      font=("Inter", 13), height=40,
+                                      fg_color="#334155", button_color="#475569",
+                                      button_hover_color="#64748b")
+        state_menu.pack(fill="x", pady=(0, 12))
+
+        ctk.CTkLabel(form_frame, text="Last Connection", font=("Inter", 13, "bold"),
+                    text_color="#e2e8f0").pack(anchor="w", pady=(0, 6))
+        last_conn_var = ctk.StringVar(value=yubi_data.get('ultima_conexion', '') or '')
+        last_conn_entry = ctk.CTkEntry(form_frame, textvariable=last_conn_var,
+                                      font=("Inter", 13), height=40,
+                                      placeholder_text="YYYY-MM-DD")
+        last_conn_entry.pack(fill="x", pady=(0, 20))
+
+        btn_frame = ctk.CTkFrame(scrollable_frame, fg_color="transparent")
+        btn_frame.pack(fill="x", pady=(10, 0))
+
+        def save_changes():
+            new_serial = serial_var.get().strip()
+            new_user = user_var.get().strip()
+            new_pipkins = pipkins_var.get().strip()
+            new_state = state_var.get().strip()
+            new_last_conn = last_conn_var.get().strip()
+
+            if not new_serial:
+                self.show_message("⚠️ Validation", "Serial cannot be empty", "warning")
+                return
+
+            if new_serial.upper() != original_serial.upper() and self.serial_exists(new_serial):
+                self.show_message("⚠️ Validation", "That serial already exists in the inventory", "warning")
+                return
+
+            if not new_state:
+                self.show_message("⚠️ Validation", "State cannot be empty", "warning")
+                return
+
+            try:
+                with open(JSON_FILE, 'r', encoding='utf-8') as f:
+                    datos = json.load(f)
+
+                updated = False
+                for item in datos:
+                    if item['serial'].upper() == original_serial.upper():
+                        item['serial'] = new_serial
+                        item['usuario'] = new_user
+                        item['codigo_pipkins'] = new_pipkins
+                        item['estado'] = new_state
+                        item['ultima_conexion'] = new_last_conn
+                        updated = True
+                        break
+
+                if not updated:
+                    self.show_message("❌ Not Found", "The selected yubikey could not be updated", "error")
+                    return
+
+                with open(JSON_FILE, 'w', encoding='utf-8') as f:
+                    json.dump(datos, f, indent=4, ensure_ascii=False)
+
+                self.refresh_inventory_display()
+                modal.destroy()
+                self.show_message("✅ Updated", f"{new_serial} was updated successfully", "success")
+            except Exception as e:
+                self.show_message("❌ Error", f"Could not save changes:\n{e}", "error")
+
+        ctk.CTkButton(btn_frame, text="💾 Save Changes", command=save_changes,
+                     fg_color="#f59e0b", hover_color="#d97706",
+                     font=("Inter", RESPONSIVE.get_font_size(14), "bold"),
+                     width=160, height=40, corner_radius=10).pack(side="left", padx=10)
+        ctk.CTkButton(btn_frame, text="Cancel", command=modal.destroy,
+                     fg_color="#475569", hover_color="#64748b",
+                     font=("Inter", RESPONSIVE.get_font_size(14)),
+                     width=120, height=40, corner_radius=10).pack(side="left", padx=10)
+
+    def delete_selected_inventory_item(self):
+        original_serial, yubi_data = self.get_selected_inventory_item()
+        if not yubi_data:
+            return
+
+        confirm = messagebox.askyesno(
+            "Delete Inventory Item",
+            f"Delete {original_serial}?\n\nThis will remove the item from the inventory file."
+        )
+        if not confirm:
+            return
+
+        try:
+            with open(JSON_FILE, 'r', encoding='utf-8') as f:
+                datos = json.load(f)
+
+            new_data = [item for item in datos if item['serial'].upper() != original_serial.upper()]
+            if len(new_data) == len(datos):
+                self.show_message("❌ Not Found", "The selected yubikey could not be deleted", "error")
+                return
+
+            with open(JSON_FILE, 'w', encoding='utf-8') as f:
+                json.dump(new_data, f, indent=4, ensure_ascii=False)
+
+            self.refresh_inventory_display()
+            self.show_message("✅ Deleted", f"{original_serial} was removed from the inventory", "success")
+        except Exception as e:
+            self.show_message("❌ Error", f"Could not delete the item:\n{e}", "error")
 
     def get_action_icon(self, action):
         icons = {
@@ -2213,6 +2398,18 @@ Current State: {estado_actual.upper()}
                      fg_color="#3b82f6", hover_color="#2563eb",
                      font=("Inter", 13, "bold"),
                      height=40, width=140).pack(side="left", padx=5)
+
+        ctk.CTkButton(search_frame, text="✏️ Edit Item",
+                 command=self.edit_selected_inventory_item,
+                 fg_color="#f59e0b", hover_color="#d97706",
+                 font=("Inter", 13, "bold"),
+                 height=40, width=140).pack(side="left", padx=5)
+
+        ctk.CTkButton(search_frame, text="🗑 Delete Item",
+                 command=self.delete_selected_inventory_item,
+                 fg_color="#ef4444", hover_color="#dc2626",
+                 font=("Inter", 13, "bold"),
+                 height=40, width=140).pack(side="left", padx=5)
         
         ctk.CTkButton(search_frame, text="📥 Export CSV",
                      command=self.export_inventory,

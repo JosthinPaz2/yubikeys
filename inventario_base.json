@@ -610,23 +610,5 @@
                 "comentario": "Reported via damage panel"
             }
         ]
-    },
-    {
-        "serial": "YK-030",
-        "usuario": "asdasdasd",
-        "codigo_pipkins": "1234569",
-        "estado": "In Use",
-        "ultima_conexion": "2026-04-01",
-        "historial": [
-            {
-                "accion": "Registro",
-                "fecha": "2026-04-01",
-                "hora": "14:49:49",
-                "usuario": "asdasdasd",
-                "codigo_pipkins": "1234569",
-                "estado": "In Use",
-                "comentario": "Initial registration"
-            }
-        ]
     }
 ]
