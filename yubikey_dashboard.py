@@ -136,7 +136,25 @@ class SerialScanner:
         
     def find_ports(self):
         ports = serial.tools.list_ports.comports()
-        return [port.device for port in ports]
+        return [
+            {
+                "device": port.device,
+                "description": port.description or "Unknown device",
+                "hwid": port.hwid or "",
+            }
+            for port in ports
+        ]
+
+    def get_port_label(self, port_info):
+        description = port_info.get("description", "Unknown device")
+        device = port_info.get("device", "")
+        hwid = port_info.get("hwid", "")
+        label = device
+        if description and description != "Unknown device":
+            label = f"{device} — {description}"
+        if hwid:
+            label = f"{label} | {hwid}"
+        return label
     
     def connect(self, port_name, baud_rate=9600):
         try:
@@ -159,6 +177,8 @@ class SerialScanner:
         if self.serial_port and self.serial_port.is_open:
             self.serial_port.close()
         self.is_connected = False
+        self.port_name = None
+        self.baud_rate = 9600
     
     def start_reading(self):
         self.is_reading = True
@@ -211,6 +231,7 @@ class YubiDash(ctk.CTk):
         self.scanner = SerialScanner(self)
         self.current_panel_name = None
         self.scanner_active = False
+        self.pending_scanner_panel = None
         
         self.initialize_database()
         self.setup_ui()
@@ -662,6 +683,13 @@ class YubiDash(ctk.CTk):
         modal.minsize(450, 400)
         
         modal.grab_set()
+
+        def close_modal():
+            if not self.scanner.is_connected:
+                self.pending_scanner_panel = None
+            modal.destroy()
+
+        modal.protocol("WM_DELETE_WINDOW", close_modal)
         
         main_frame = ctk.CTkFrame(modal, fg_color=SLATE_GRAY, corner_radius=15,
                                  border_width=1, border_color="#334155")
@@ -674,6 +702,18 @@ class YubiDash(ctk.CTk):
         ctk.CTkLabel(scrollable_frame, text="🔌 Serial Port Configuration",
                     font=("Inter", RESPONSIVE.get_font_size(20), "bold"),
                     text_color="#38bdf8").pack(pady=15)
+
+        current_port_text = "🔴 Not connected"
+        current_port_color = "#ef4444"
+        if self.scanner.is_connected and self.scanner.port_name:
+            current_port_text = f"🟢 Connected to {self.scanner.port_name} @ {self.scanner.baud_rate} baud"
+            current_port_color = SUCCESS_GREEN
+
+        ctk.CTkLabel(scrollable_frame, text=current_port_text,
+                    font=("Inter", 13, "bold"),
+                    text_color=current_port_color,
+                    wraplength=420,
+                    justify="center").pack(pady=(0, 10))
         
         current_frame = ctk.CTkFrame(scrollable_frame, fg_color="#0f172a", corner_radius=10)
         current_frame.pack(fill="x", padx=20, pady=15)
@@ -697,29 +737,59 @@ class YubiDash(ctk.CTk):
         ctk.CTkLabel(scrollable_frame, text="Available Ports:",
                     font=("Inter", 12, "bold"),
                     text_color="#94a3b8").pack(anchor="w", padx=20, pady=(15, 5))
+
+        ports_count_label = ctk.CTkLabel(scrollable_frame, text="Detected ports: 0",
+                        font=("Inter", 11),
+                        text_color="#64748b")
+        ports_count_label.pack(anchor="w", padx=20, pady=(0, 5))
         
-        ports = self.scanner.find_ports()
-        
-        if not ports:
-            ctk.CTkLabel(scrollable_frame, text="⚠️ No serial ports found",
-                        font=("Inter", 12),
-                        text_color="#f59e0b",
-                        wraplength=400).pack(pady=10)
-        else:
-            port_var = ctk.StringVar(value=ports[0])
-            port_frame = ctk.CTkFrame(scrollable_frame, fg_color="transparent")
-            port_frame.pack(fill="x", padx=20)
-            
-            for i, port in enumerate(ports):
-                ctk.CTkRadioButton(port_frame, text=port, variable=port_var, value=port,
-                                 font=("Inter", 13)).pack(anchor="w", pady=3)
+        ports_frame = ctk.CTkFrame(scrollable_frame, fg_color="transparent")
+        ports_frame.pack(fill="x", padx=20)
+
+        port_var = ctk.StringVar()
+        port_widgets = []
+
+        def rebuild_port_list():
+            for widget in port_widgets:
+                widget.destroy()
+            port_widgets.clear()
+
+            ports = self.scanner.find_ports()
+            ports_count_label.configure(text=f"Detected ports: {len(ports)}")
+            if not ports:
+                port_var.set("")
+                ctk.CTkLabel(ports_frame, text="⚠️ No serial ports found",
+                            font=("Inter", 12),
+                            text_color="#f59e0b",
+                            wraplength=400).pack(anchor="w", pady=6)
+                return ports
+
+            selected_device = self.scanner.port_name if self.scanner.port_name else ports[0]["device"]
+            if selected_device not in [p["device"] for p in ports]:
+                selected_device = ports[0]["device"]
+            port_var.set(selected_device)
+
+            for port in ports:
+                radio = ctk.CTkRadioButton(
+                    ports_frame,
+                    text=self.scanner.get_port_label(port),
+                    variable=port_var,
+                    value=port["device"],
+                    font=("Inter", 13)
+                )
+                radio.pack(anchor="w", pady=3)
+                port_widgets.append(radio)
+
+            return ports
+
+        ports = rebuild_port_list()
         
         ctk.CTkLabel(scrollable_frame, text="Baud Rate:",
                     font=("Inter", 12, "bold"),
                     text_color="#94a3b8").pack(anchor="w", padx=20, pady=(15, 5))
         
-        baud_var = ctk.StringVar(value="9600")
-        baud_rates = ["9600", "19200", "38400", "57600", "115200"]
+        baud_var = ctk.StringVar(value=str(self.scanner.baud_rate if self.scanner.baud_rate else 9600))
+        baud_rates = ["4800", "9600", "14400", "19200", "38400", "57600", "115200", "230400", "250000"]
         
         baud_frame = ctk.CTkFrame(scrollable_frame, fg_color="transparent")
         baud_frame.pack(fill="x", padx=20)
@@ -727,6 +797,12 @@ class YubiDash(ctk.CTk):
         for i, baud in enumerate(baud_rates):
             ctk.CTkRadioButton(baud_frame, text=baud, variable=baud_var, value=baud,
                              font=("Inter", 12)).grid(row=i//3, column=i%3, padx=10, pady=3)
+
+        ctk.CTkLabel(scrollable_frame, text="Tip: use the baud rate required by your scanner or Arduino.",
+                    font=("Inter", 11),
+                    text_color="#64748b",
+                    wraplength=430,
+                    justify="left").pack(anchor="w", padx=20, pady=(8, 0))
         
         btn_height = 40 if not RESPONSIVE.is_laptop else 35
         btn_width = 130 if not RESPONSIVE.is_laptop else 110
@@ -744,6 +820,16 @@ class YubiDash(ctk.CTk):
                     self.show_message("✅ Connected",
                                     f"Connected to {port} @ {baud} baud",
                                     "success")
+                    if self.pending_scanner_panel:
+                        panel = self.pending_scanner_panel
+                        self.pending_scanner_panel = None
+                        self.scanner.enable_auto_scan(panel)
+                        self.scanner_active = True
+                        self.current_panel_name = panel
+                        self.update_scanner_buttons_state()
+                        self.show_message("📡 Scanner Active",
+                                        f"Scanning on panel: {panel.upper()}\n\nPoint the scanner now",
+                                        "success")
                     modal.destroy()
                 else:
                     self.show_message("❌ Connection Error",
@@ -751,6 +837,10 @@ class YubiDash(ctk.CTk):
                                     "error")
             else:
                 self.show_message("⚠️ No Ports", "No serial ports available", "warning")
+
+        def refresh_ports():
+            nonlocal ports
+            ports = rebuild_port_list()
         
         btn_frame = ctk.CTkFrame(scrollable_frame, fg_color="transparent")
         btn_frame.pack(pady=20)
@@ -759,14 +849,20 @@ class YubiDash(ctk.CTk):
                      fg_color="#38bdf8", hover_color="#0ea5e9",
                      font=("Inter", RESPONSIVE.get_font_size(14), "bold"),
                      width=btn_width, height=btn_height, corner_radius=10).pack(side="left", padx=10)
+
+        ctk.CTkButton(btn_frame, text="🔄 Refresh", command=refresh_ports,
+                     fg_color="#64748b", hover_color="#475569",
+                     font=("Inter", RESPONSIVE.get_font_size(13)),
+                     width=btn_width, height=btn_height, corner_radius=10).pack(side="left", padx=10)
         
-        ctk.CTkButton(btn_frame, text="Close", command=modal.destroy,
+        ctk.CTkButton(btn_frame, text="Close", command=close_modal,
                      fg_color="#475569", hover_color="#64748b",
                      font=("Inter", RESPONSIVE.get_font_size(13)),
                      width=btn_width-30, height=btn_height, corner_radius=10).pack(side="left", padx=10)
 
     def toggle_scanner(self, panel):
         if not self.scanner.is_connected:
+            self.pending_scanner_panel = panel
             self.show_port_config()
         else:
             if self.scanner_active:
@@ -779,6 +875,8 @@ class YubiDash(ctk.CTk):
             else:
                 self.scanner.enable_auto_scan(panel)
                 self.scanner_active = True
+                self.pending_scanner_panel = None
+                self.current_panel_name = panel
                 self.update_scanner_buttons_state()
                 self.show_message("📡 Scanner Active",
                                 f"Scanning on panel: {panel.upper()}\n\nPoint the scanner now",
@@ -799,6 +897,31 @@ class YubiDash(ctk.CTk):
             if hasattr(self, btn_attr):
                 btn = getattr(self, btn_attr)
                 btn.configure(text=btn_text, fg_color=btn_color, hover_color=hover_color)
+
+    def process_serial_data(self, serial_data):
+        if not serial_data:
+            return
+
+        panel = self.scanner.current_panel or self.current_panel_name
+        if not panel:
+            return
+
+        if panel == 'nueva' and hasattr(self, 'entry_nueva'):
+            self.entry_nueva.delete(0, 'end')
+            self.entry_nueva.insert(0, serial_data)
+            self.on_register_submit()
+        elif panel == 'ingreso' and hasattr(self, 'entry_ingreso'):
+            self.entry_ingreso.delete(0, 'end')
+            self.entry_ingreso.insert(0, serial_data)
+            self.process_break_lunch_scan()
+        elif panel == 'asignacion' and hasattr(self, 'entry_asignacion'):
+            self.entry_asignacion.delete(0, 'end')
+            self.entry_asignacion.insert(0, serial_data)
+            self.process_assign_return_scan()
+        elif panel == 'perdida' and hasattr(self, 'entry_perdida'):
+            self.entry_perdida.delete(0, 'end')
+            self.entry_perdida.insert(0, serial_data)
+            self.process_loss_damage_scan()
 
     def update_scanner_status(self, connected, port_name=""):
         if connected:
@@ -822,6 +945,7 @@ class YubiDash(ctk.CTk):
     def disconnect_scanner(self):
         if self.scanner.is_connected:
             self.scanner.disconnect()
+            self.pending_scanner_panel = None
             self.update_scanner_status(False)
             self.show_message("🔌 Disconnected", "Scanner disconnected", "info")
 
