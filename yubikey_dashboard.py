@@ -1,6 +1,6 @@
 # ============================================================================
 # YUBIKEY MANAGEMENT DASHBOARD - YubiDash
-# Versión: 6.4 (Reportes Mejorados + UI Profesional)
+# Version: 6.4 (Enhanced Reports + Professional UI)
 # ============================================================================
 
 import customtkinter as ctk
@@ -13,9 +13,12 @@ from tkinter import filedialog, messagebox
 import serial
 import serial.tools.list_ports
 import threading
+import math
+import ctypes
+import struct
 
 # ============================================================================
-# CONFIGURACIÓN VISUAL
+# VISUAL CONFIGURATION
 # ============================================================================
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
@@ -49,7 +52,7 @@ REPORT_COLORS = {
 }
 
 # ============================================================================
-# CLASE DE CONFIGURACIÓN RESPONSIVA
+# RESPONSIVE CONFIGURATION CLASS
 # ============================================================================
 class ResponsiveConfig:
     def __init__(self):
@@ -120,7 +123,7 @@ ESTADO_COLORES = {
 }
 
 # ============================================================================
-# CLASE SCANNER SERIAL
+# SERIAL SCANNER CLASS
 # ============================================================================
 class SerialScanner:
     def __init__(self, app):
@@ -165,7 +168,7 @@ class SerialScanner:
             self.start_reading()
             return True
         except Exception as e:
-            print(f"Error conectando: {e}")
+            print(f"Connection error: {e}")
             self.is_connected = False
             return False
     
@@ -195,7 +198,7 @@ class SerialScanner:
                         if len(serial_data) >= 6:
                             self.app.after(0, self.app.process_serial_data, serial_data)
             except Exception as e:
-                print(f"Error leyendo: {e}")
+                print(f"Read error: {e}")
                 break
     
     def enable_auto_scan(self, panel_name):
@@ -207,13 +210,14 @@ class SerialScanner:
         self.current_panel = None
 
 # ============================================================================
-# CLASE PRINCIPAL
+# MAIN CLASS
 # ============================================================================
 class YubiDash(ctk.CTk):
     def __init__(self):
         super().__init__()
         
         self.title("Yubikey Management Dashboard - WFM System")
+        self.setup_app_identity_and_icon()
         self.geometry(RESPONSIVE.get_window_size())
         self.minsize(1100, 650)
         self.configure(fg_color=MIDNIGHT_BLUE)
@@ -232,12 +236,94 @@ class YubiDash(ctk.CTk):
         self.current_panel_name = None
         self.scanner_active = False
         self.pending_scanner_panel = None
+        self.tip_animation_jobs = {}
+        self.ui_animation_job = None
+        self.ui_animation_phase = 0
         
         self.initialize_database()
         self.setup_ui()
+        self.start_ui_animations()
         
-        dispositivo = "💻 Laptop" if RESPONSIVE.is_laptop else "🖥️ Desktop"
-        print(f"✓ YubiDash iniciado - {dispositivo} ({self.screen_width}x{self.screen_height})")
+        device_type = "💻 Laptop" if RESPONSIVE.is_laptop else "🖥️ Desktop"
+        print(f"✓ YubiDash started - {device_type} ({self.screen_width}x{self.screen_height})")
+
+    def generate_brand_icon_bytes(self, size=64):
+        # Dark background with cyan "C" shape to match the in-app icon style.
+        bg = (15, 23, 42, 255)
+        fg = (56, 189, 248, 255)
+
+        cx = (size - 1) / 2.0
+        cy = (size - 1) / 2.0
+        r_outer = size * 0.34
+        r_inner = size * 0.21
+        open_cut = cx + size * 0.14
+
+        pixels = bytearray()
+        for y in range(size - 1, -1, -1):
+            for x in range(size):
+                dx = x - cx
+                dy = y - cy
+                dist2 = dx * dx + dy * dy
+                color = bg
+
+                if (r_inner * r_inner) <= dist2 <= (r_outer * r_outer) and x <= open_cut:
+                    color = fg
+
+                # ICO payload uses BGRA byte order.
+                pixels.extend((color[2], color[1], color[0], color[3]))
+
+        and_row_bytes = ((size + 31) // 32) * 4
+        and_mask = bytes(and_row_bytes * size)
+
+        bmp_header = struct.pack(
+            '<IIIHHIIIIII',
+            40,            # BITMAPINFOHEADER size
+            size,          # width
+            size * 2,      # height (XOR + AND masks)
+            1,             # planes
+            32,            # bits per pixel
+            0,             # BI_RGB
+            len(pixels) + len(and_mask),
+            0, 0, 0, 0
+        )
+
+        img_data = bmp_header + bytes(pixels) + and_mask
+        ico_header = struct.pack('<HHH', 0, 1, 1)
+        ico_entry = struct.pack(
+            '<BBBBHHII',
+            size if size < 256 else 0,
+            size if size < 256 else 0,
+            0,
+            0,
+            1,
+            32,
+            len(img_data),
+            6 + 16
+        )
+
+        return ico_header + ico_entry + img_data
+
+    def setup_app_identity_and_icon(self):
+        if os.name != 'nt':
+            return
+
+        try:
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("WFM.YubiDash.App")
+        except Exception:
+            pass
+
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        icon_path = os.path.join(base_dir, "YUBIKEY.ico")
+        try:
+            # Prefer the user-provided icon file for both window and taskbar.
+            if not os.path.exists(icon_path):
+                fallback_path = os.path.join(base_dir, "yubidash_blue.ico")
+                with open(fallback_path, 'wb') as icon_file:
+                    icon_file.write(self.generate_brand_icon_bytes())
+                icon_path = fallback_path
+            self.iconbitmap(icon_path)
+        except Exception:
+            pass
 
     def on_window_resize(self, event):
         if event.widget == self:
@@ -248,7 +334,7 @@ class YubiDash(ctk.CTk):
 
     def setup_ui(self):
         # ====================================================================
-        # BARRA LATERAL
+        # SIDEBAR
         # ====================================================================
         self.sidebar = ctk.CTkFrame(self, width=self.current_sidebar_width, 
                                    corner_radius=0, fg_color=SLATE_GRAY)
@@ -283,13 +369,13 @@ class YubiDash(ctk.CTk):
                     text_color="#94a3b8").pack(side="left", padx=5)
         
         self.status_label = ctk.CTkLabel(self.status_frame, 
-                                        text="Desconectado", 
+                                        text="Disconnected", 
                                         font=("Inter", RESPONSIVE.get_font_size(12), "bold"), 
                                         text_color="#ef4444")
         self.status_label.pack(pady=8)
         
         self.btn_config_port = ctk.CTkButton(self.status_frame,
-                                            text="🔌 Configurar",
+                                            text="🔌 Configure",
                                             command=self.show_port_config,
                                             fg_color="#475569",
                                             hover_color="#64748b",
@@ -350,7 +436,7 @@ class YubiDash(ctk.CTk):
         self.btn_report.pack(pady=4, padx=15, fill="x")
         
         # ====================================================================
-        # ÁREA PRINCIPAL
+        # MAIN AREA
         # ====================================================================
         self.view_main = ctk.CTkFrame(self, fg_color="transparent")
         self.view_main.grid(row=0, column=1, sticky="nsew")
@@ -381,7 +467,7 @@ class YubiDash(ctk.CTk):
             panel.pack_forget()
 
     # ========================================================================
-    # PANEL DE REPORTES MEJORADO (HERMOSO)
+    # ENHANCED REPORTS PANEL
     # ========================================================================
     def setup_report_view(self):
         # Header principal
@@ -395,6 +481,29 @@ class YubiDash(ctk.CTk):
         ctk.CTkLabel(header_frame, text="Track losses, damages, and system statistics", 
                     font=("Inter", 14),
                     text_color="#94a3b8").pack(pady=8)
+
+        header_actions = ctk.CTkFrame(header_frame, fg_color="transparent")
+        header_actions.pack(fill="x", pady=(8, 0))
+
+        self.report_last_update_label = ctk.CTkLabel(
+            header_actions,
+            text="Last updated: --",
+            font=("Inter", 12, "bold"),
+            text_color="#93c5fd"
+        )
+        self.report_last_update_label.pack(side="left", padx=5)
+
+        ctk.CTkButton(
+            header_actions,
+            text="🔄 Refresh Reports",
+            command=self.load_reports,
+            fg_color="#1d4ed8",
+            hover_color="#2563eb",
+            font=("Inter", 12, "bold"),
+            height=34,
+            width=170,
+            corner_radius=10
+        ).pack(side="right", padx=5)
         
         # Tabs mejorados
         self.report_tabs = ctk.CTkTabview(self.view_report, corner_radius=15,
@@ -402,7 +511,7 @@ class YubiDash(ctk.CTk):
                                          border_width=0)
         self.report_tabs.pack(fill="both", expand=True, padx=50, pady=20)
         
-        # Configurar apariencia de tabs
+        # Configure tab appearance
         self.report_tabs._segmented_button.configure(
             fg_color="#1e293b",
             selected_color="#3b82f6",
@@ -417,21 +526,21 @@ class YubiDash(ctk.CTk):
         self.tab_damage = self.report_tabs.add("  🟣 Damage  ")
         self.tab_summary = self.report_tabs.add("  📈 Summary  ")
         
-        # Configurar cada tab
+        # Configure each tab
         self.setup_loss_report_tab_beautiful()
         self.setup_damage_report_tab_beautiful()
         self.setup_summary_tab_beautiful()
 
     def setup_loss_report_tab_beautiful(self):
-        """Configuración hermosa para la pestaña de pérdidas"""
+        """Beautiful setup for the loss tab"""
         
-        # Tarjeta de estadísticas principal
+        # Main statistics card
         stats_card = ctk.CTkFrame(self.tab_loss, fg_color=REPORT_COLORS["loss_bg"],
                                  corner_radius=20, border_width=2,
                                  border_color=REPORT_COLORS["loss_border"])
         stats_card.pack(fill="x", padx=40, pady=25)
         
-        # Contenido de la tarjeta
+        # Card content
         ctk.CTkLabel(stats_card, text="🔴 Total Lost Yubikeys", 
                     font=("Inter", RESPONSIVE.get_font_size(18), "bold"),
                     text_color="white").pack(pady=(20, 10))
@@ -445,13 +554,13 @@ class YubiDash(ctk.CTk):
                     font=("Inter", 14),
                     text_color=REPORT_COLORS["loss_text"]).pack(pady=(0, 20))
         
-        # Tabla hermosa
+        # Styled table
         table_card = ctk.CTkFrame(self.tab_loss, fg_color=REPORT_COLORS["card_bg"],
                                  corner_radius=15, border_width=1,
                                  border_color=REPORT_COLORS["card_border"])
         table_card.pack(fill="both", expand=True, padx=40, pady=20)
         
-        # Header de la tabla
+        # Table header
         table_header = ctk.CTkFrame(table_card, fg_color="transparent")
         table_header.pack(fill="x", padx=25, pady=(20, 15))
         
@@ -459,18 +568,19 @@ class YubiDash(ctk.CTk):
                     font=("Inter", RESPONSIVE.get_font_size(20), "bold"),
                     text_color=REPORT_COLORS["loss_text"]).pack()
         
-        # Frame para la tabla con scroll
+        # Scrollable frame for table
         tree_frame = ctk.CTkFrame(table_card, fg_color=REPORT_COLORS["table_header"],
                                  corner_radius=10, border_width=1,
                                  border_color=REPORT_COLORS["table_border"])
         tree_frame.pack(fill="both", expand=True, padx=25, pady=(0, 25))
         
-        # Columnas
+        # Columns
         loss_cols = ("Serial", "User", "Pipkins", "Date", "Time")
         self.loss_tree = ttk.Treeview(tree_frame, columns=loss_cols,
-                                     show='headings', height=12)
+                         show='headings', height=12,
+                         style='Loss.Treeview')
         
-        # Estilo personalizado de la tabla
+        # Custom table style
         style = ttk.Style()
         style.configure('Loss.Treeview',
                        font=('Inter', 12),
@@ -489,16 +599,22 @@ class YubiDash(ctk.CTk):
         style.map('Loss.Treeview',
                  background=[('selected', REPORT_COLORS["loss_bg"])],
                  foreground=[('selected', 'white')])
+
+        self.loss_tree.tag_configure('loss_even', background=REPORT_COLORS["table_row"])
+        self.loss_tree.tag_configure('loss_odd', background=REPORT_COLORS["table_row_alt"])
         
-        # Configurar columnas
+        # Configure columns
         col_widths = {"Serial": 150, "User": 200, "Pipkins": 120, "Date": 130, "Time": 100}
         for col in loss_cols:
             self.loss_tree.heading(col, text=col, anchor="w")
             self.loss_tree.column(col, anchor="w", width=col_widths.get(col, 150), minwidth=100)
         
         # Scrollbars
-        scrollbar_y = ttk.Scrollbar(tree_frame, orient="vertical", command=self.loss_tree.yview)
-        scrollbar_x = ttk.Scrollbar(tree_frame, orient="horizontal", command=self.loss_tree.xview)
+        self.configure_scrollbar_style("ReportLoss", REPORT_COLORS["loss_border"], REPORT_COLORS["loss_bg_light"])
+        scrollbar_y = ttk.Scrollbar(tree_frame, orient="vertical", command=self.loss_tree.yview,
+                        style="ReportLoss.Vertical.TScrollbar")
+        scrollbar_x = ttk.Scrollbar(tree_frame, orient="horizontal", command=self.loss_tree.xview,
+                        style="ReportLoss.Horizontal.TScrollbar")
         self.loss_tree.configure(yscrollcommand=scrollbar_y.set, xscrollcommand=scrollbar_x.set)
         
         self.loss_tree.grid(row=0, column=0, sticky="nsew", padx=2, pady=2)
@@ -508,7 +624,7 @@ class YubiDash(ctk.CTk):
         tree_frame.grid_rowconfigure(0, weight=1)
         tree_frame.grid_columnconfigure(0, weight=1)
         
-        # Botón de exportar
+        # Export button
         ctk.CTkButton(self.tab_loss, text="📥 Export to CSV",
                      command=self.export_loss_report,
                      fg_color="#ef4444", hover_color="#dc2626",
@@ -516,9 +632,9 @@ class YubiDash(ctk.CTk):
                      height=45, width=220, corner_radius=12).pack(pady=20)
 
     def setup_damage_report_tab_beautiful(self):
-        """Configuración hermosa para la pestaña de daños"""
+        """Beautiful setup for the damage tab"""
         
-        # Tarjeta de estadísticas principal
+        # Main statistics card
         stats_card = ctk.CTkFrame(self.tab_damage, fg_color=REPORT_COLORS["damage_bg"],
                                  corner_radius=20, border_width=2,
                                  border_color=REPORT_COLORS["damage_border"])
@@ -537,7 +653,7 @@ class YubiDash(ctk.CTk):
                     font=("Inter", 14),
                     text_color=REPORT_COLORS["damage_text"]).pack(pady=(0, 20))
         
-        # Tabla hermosa
+        # Styled table
         table_card = ctk.CTkFrame(self.tab_damage, fg_color=REPORT_COLORS["card_bg"],
                                  corner_radius=15, border_width=1,
                                  border_color=REPORT_COLORS["card_border"])
@@ -557,7 +673,8 @@ class YubiDash(ctk.CTk):
         
         damage_cols = ("Serial", "User", "Pipkins", "Date", "Time")
         self.damage_tree = ttk.Treeview(tree_frame, columns=damage_cols,
-                                       show='headings', height=12)
+                           show='headings', height=12,
+                           style='Damage.Treeview')
         
         style = ttk.Style()
         style.configure('Damage.Treeview',
@@ -577,14 +694,20 @@ class YubiDash(ctk.CTk):
         style.map('Damage.Treeview',
                  background=[('selected', REPORT_COLORS["damage_bg"])],
                  foreground=[('selected', 'white')])
+
+        self.damage_tree.tag_configure('damage_even', background=REPORT_COLORS["table_row"])
+        self.damage_tree.tag_configure('damage_odd', background=REPORT_COLORS["table_row_alt"])
         
         col_widths = {"Serial": 150, "User": 200, "Pipkins": 120, "Date": 130, "Time": 100}
         for col in damage_cols:
             self.damage_tree.heading(col, text=col, anchor="w")
             self.damage_tree.column(col, anchor="w", width=col_widths.get(col, 150), minwidth=100)
         
-        scrollbar_y = ttk.Scrollbar(tree_frame, orient="vertical", command=self.damage_tree.yview)
-        scrollbar_x = ttk.Scrollbar(tree_frame, orient="horizontal", command=self.damage_tree.xview)
+        self.configure_scrollbar_style("ReportDamage", REPORT_COLORS["damage_border"], REPORT_COLORS["damage_bg_light"])
+        scrollbar_y = ttk.Scrollbar(tree_frame, orient="vertical", command=self.damage_tree.yview,
+                        style="ReportDamage.Vertical.TScrollbar")
+        scrollbar_x = ttk.Scrollbar(tree_frame, orient="horizontal", command=self.damage_tree.xview,
+                        style="ReportDamage.Horizontal.TScrollbar")
         self.damage_tree.configure(yscrollcommand=scrollbar_y.set, xscrollcommand=scrollbar_x.set)
         
         self.damage_tree.grid(row=0, column=0, sticky="nsew", padx=2, pady=2)
@@ -601,13 +724,13 @@ class YubiDash(ctk.CTk):
                      height=45, width=220, corner_radius=12).pack(pady=20)
 
     def setup_summary_tab_beautiful(self):
-        """Configuración hermosa para la pestaña de resumen"""
+        """Beautiful setup for the summary tab"""
         
-        # Stats superiores en tarjetas
+        # Top card stats
         top_stats_frame = ctk.CTkFrame(self.tab_summary, fg_color="transparent")
         top_stats_frame.pack(fill="x", padx=40, pady=25)
         
-        # Tarjeta de pérdidas
+        # Loss card
         loss_card = ctk.CTkFrame(top_stats_frame, fg_color=REPORT_COLORS["loss_bg"],
                                 corner_radius=20, border_width=2,
                                 border_color=REPORT_COLORS["loss_border"])
@@ -622,7 +745,7 @@ class YubiDash(ctk.CTk):
                                               text_color="white")
         self.summary_loss_label.pack(pady=10)
         
-        # Tarjeta de daños
+        # Damage card
         damage_card = ctk.CTkFrame(top_stats_frame, fg_color=REPORT_COLORS["damage_bg"],
                                   corner_radius=20, border_width=2,
                                   border_color=REPORT_COLORS["damage_border"])
@@ -637,7 +760,7 @@ class YubiDash(ctk.CTk):
                                                 text_color="white")
         self.summary_damage_label.pack(pady=10)
         
-        # Tarjeta de total
+        # Total card
         total_card = ctk.CTkFrame(top_stats_frame, fg_color=REPORT_COLORS["summary_bg"],
                                  corner_radius=20, border_width=2,
                                  border_color=REPORT_COLORS["summary_border"])
@@ -652,7 +775,7 @@ class YubiDash(ctk.CTk):
                                                text_color="white")
         self.summary_total_label.pack(pady=10)
         
-        # Tarjeta de estadísticas de inventario
+        # Inventory statistics card
         inv_stats_card = ctk.CTkFrame(self.tab_summary, fg_color=REPORT_COLORS["card_bg"],
                                      corner_radius=20, border_width=1,
                                      border_color=REPORT_COLORS["card_border"])
@@ -671,7 +794,7 @@ class YubiDash(ctk.CTk):
         self.summary_text.pack(fill="both", expand=True, padx=25, pady=20)
 
     # ========================================================================
-    # MODAL DE CONFIGURACIÓN DE PUERTO CON SCROLL
+    # PORT CONFIGURATION MODAL WITH SCROLL
     # ========================================================================
     def show_port_config(self):
         modal = ctk.CTkToplevel(self)
@@ -883,20 +1006,261 @@ class YubiDash(ctk.CTk):
                                 "success")
 
     def update_scanner_buttons_state(self):
-        if self.scanner_active:
-            btn_text = "⏹️ Stop Scanner"
-            btn_color = "#ef4444"
-            hover_color = "#dc2626"
-        else:
-            btn_text = "📡 Activate Scanner"
-            btn_color = "#3b82f6"
-            hover_color = "#2563eb"
+        panel_activate_colors = {
+            'nueva': ("#3b82f6", "#2563eb"),
+            'ingreso': ("#f59e0b", "#d97706"),
+            'asignacion': ("#8b5cf6", "#7c3aed"),
+            # Use fuchsia for Loss/Damage to avoid confusion with Stop (red)
+            'perdida': ("#ec4899", "#db2777")
+        }
+
+        active_panel = self.scanner.current_panel or self.current_panel_name
         
         for panel_name in ['nueva', 'ingreso', 'asignacion', 'perdida']:
             btn_attr = f"btn_scan_{panel_name}"
             if hasattr(self, btn_attr):
                 btn = getattr(self, btn_attr)
+                if self.scanner_active and panel_name == active_panel:
+                    btn_text = "⏹️ Stop Scanner"
+                    btn_color = "#ef4444"
+                    hover_color = "#dc2626"
+                else:
+                    btn_text = "📡 Activate Scanner"
+                    btn_color, hover_color = panel_activate_colors.get(panel_name, ("#3b82f6", "#2563eb"))
                 btn.configure(text=btn_text, fg_color=btn_color, hover_color=hover_color)
+
+    def _hex_to_rgb(self, color):
+        color = color.lstrip('#')
+        return tuple(int(color[i:i+2], 16) for i in (0, 2, 4))
+
+    def _rgb_to_hex(self, rgb):
+        return '#{:02x}{:02x}{:02x}'.format(*rgb)
+
+    def blend_color(self, color_a, color_b, t):
+        rgb_a = self._hex_to_rgb(color_a)
+        rgb_b = self._hex_to_rgb(color_b)
+        mixed = tuple(int(a + (b - a) * t) for a, b in zip(rgb_a, rgb_b))
+        return self._rgb_to_hex(mixed)
+
+    def safe_focus_widget(self, parent, widget):
+        try:
+            if parent and parent.winfo_exists() and widget and widget.winfo_exists():
+                widget.focus_set()
+        except Exception:
+            pass
+
+    def animate_panel_transition(self):
+        try:
+            self.attributes('-alpha', 0.94)
+        except Exception:
+            return
+
+        steps = 5
+        delay = 20
+
+        def step(i):
+            alpha = 0.94 + ((1.0 - 0.94) * (i / steps))
+            try:
+                self.attributes('-alpha', alpha)
+            except Exception:
+                return
+            if i < steps:
+                self.after(delay, lambda: step(i + 1))
+
+        step(0)
+
+    def update_sidebar_button_styles(self, pulse_t=0.0):
+        sidebar_styles = {
+            'nueva': ('btn_nueva', '#3b82f6', '#2563eb'),
+            'ingreso': ('btn_ingreso', '#f59e0b', '#d97706'),
+            'asignacion': ('btn_asignacion', '#8b5cf6', '#7c3aed'),
+            'perdida': ('btn_perdida', '#ef4444', '#dc2626'),
+            'inventory': ('btn_inv', '#1e293b', '#334155'),
+            'reports': ('btn_report', '#1e293b', '#334155')
+        }
+
+        for panel_name, (btn_attr, base_color, hover_color) in sidebar_styles.items():
+            if hasattr(self, btn_attr):
+                btn = getattr(self, btn_attr)
+                color = base_color
+                if panel_name == self.current_panel_name:
+                    color = self.blend_color(base_color, hover_color, pulse_t)
+                btn.configure(fg_color=color, hover_color=hover_color)
+
+    def pulse_current_scanner_button(self, pulse_t=0.0):
+        panel_colors = {
+            'nueva': ('#3b82f6', '#2563eb'),
+            'ingreso': ('#f59e0b', '#d97706'),
+            'asignacion': ('#8b5cf6', '#7c3aed'),
+            'perdida': ('#ec4899', '#db2777')
+        }
+
+        active_panel = self.scanner.current_panel or self.current_panel_name
+        if active_panel not in panel_colors:
+            return
+
+        btn_attr = f'btn_scan_{active_panel}'
+        if not hasattr(self, btn_attr):
+            return
+
+        btn = getattr(self, btn_attr)
+        if self.scanner_active:
+            base_color, hover_color = ('#ef4444', '#dc2626')
+        else:
+            base_color, hover_color = panel_colors[active_panel]
+
+        pulse_color = self.blend_color(base_color, hover_color, pulse_t)
+        btn.configure(fg_color=pulse_color, hover_color=hover_color)
+
+    def start_ui_animations(self):
+        if self.ui_animation_job:
+            try:
+                self.after_cancel(self.ui_animation_job)
+            except Exception:
+                pass
+
+        def loop():
+            if not self.winfo_exists():
+                return
+            self.ui_animation_phase += 1
+            pulse_t = (math.sin(self.ui_animation_phase * 0.22) + 1) / 2
+            try:
+                self.update_sidebar_button_styles(pulse_t)
+                self.update_scanner_buttons_state()
+                self.pulse_current_scanner_button(pulse_t)
+            except Exception:
+                return
+            self.ui_animation_job = self.after(120, loop)
+
+        loop()
+
+    def update_entry_border_colors(self):
+        panel_border_colors = {
+            'nueva': '#3b82f6',
+            'ingreso': '#f59e0b',
+            'asignacion': '#8b5cf6',
+            # Keep Loss/Damage in fuchsia to avoid confusion with Stop red
+            'perdida': '#ec4899'
+        }
+
+        default_color = '#3b8ed0'
+        active_panel = self.current_panel_name
+
+        entry_by_panel = {
+            'nueva': 'entry_nueva',
+            'ingreso': 'entry_ingreso',
+            'asignacion': 'entry_asignacion',
+            'perdida': 'entry_perdida'
+        }
+
+        for panel_name, entry_attr in entry_by_panel.items():
+            if hasattr(self, entry_attr):
+                entry = getattr(self, entry_attr)
+                border_color = panel_border_colors.get(panel_name, default_color) if panel_name == active_panel else default_color
+                try:
+                    entry.configure(border_color=border_color)
+                except Exception:
+                    pass
+
+    def stop_tip_animations(self):
+        for _, job in list(self.tip_animation_jobs.items()):
+            try:
+                self.after_cancel(job)
+            except Exception:
+                pass
+        self.tip_animation_jobs.clear()
+
+    def animate_tip_label(self, label, key, colors=("#94a3b8", "#cbd5e1", "#94a3b8"), delay=420):
+        if not label or not label.winfo_exists():
+            self.tip_animation_jobs.pop(key, None)
+            return
+
+        idx = self.tip_animation_jobs.get(f"{key}_idx", 0) % len(colors)
+        label.configure(text_color=colors[idx])
+        self.tip_animation_jobs[f"{key}_idx"] = idx + 1
+
+        job = self.after(delay, lambda: self.animate_tip_label(label, key, colors, delay))
+        self.tip_animation_jobs[key] = job
+
+    def get_panel_theme(self, tipo):
+        themes = {
+            'nueva': {
+                'accent': '#38bdf8',
+                'accent_hover': '#0ea5e9',
+                'tip': '#7dd3fc',
+                'selected': '#2563eb',
+                'row': '#0b1730',
+                'row_alt': '#0f172a'
+            },
+            'ingreso': {
+                'accent': '#f59e0b',
+                'accent_hover': '#d97706',
+                'tip': '#fcd34d',
+                'selected': '#b45309',
+                'row': '#2a1f10',
+                'row_alt': '#0f172a'
+            },
+            'asignacion': {
+                'accent': '#8b5cf6',
+                'accent_hover': '#7c3aed',
+                'tip': '#c4b5fd',
+                'selected': '#6d28d9',
+                'row': '#1f1638',
+                'row_alt': '#0f172a'
+            },
+            'perdida': {
+                'accent': '#ef4444',
+                'accent_hover': '#dc2626',
+                'tip': '#fca5a5',
+                'selected': '#b91c1c',
+                'row': '#2f1111',
+                'row_alt': '#0f172a'
+            }
+        }
+        return themes.get(tipo, themes['nueva'])
+
+    def configure_scrollbar_style(self, style_prefix, accent, hover, trough="#0f172a"):
+        style = ttk.Style()
+        style.theme_use('clam')
+
+        v_style = f"{style_prefix}.Vertical.TScrollbar"
+        h_style = f"{style_prefix}.Horizontal.TScrollbar"
+
+        style.configure(v_style,
+                        gripcount=0,
+                        background=accent,
+                        darkcolor=accent,
+                        lightcolor=accent,
+                        troughcolor=trough,
+                        bordercolor=trough,
+                        arrowcolor="#e2e8f0",
+                        relief='flat')
+        style.map(v_style,
+                  background=[('active', hover), ('pressed', hover)],
+                  arrowcolor=[('active', 'white')])
+
+        style.configure(h_style,
+                        gripcount=0,
+                        background=accent,
+                        darkcolor=accent,
+                        lightcolor=accent,
+                        troughcolor=trough,
+                        bordercolor=trough,
+                        arrowcolor="#e2e8f0",
+                        relief='flat')
+        style.map(h_style,
+                  background=[('active', hover), ('pressed', hover)],
+                  arrowcolor=[('active', 'white')])
+
+    def create_scrollable_frame(self, parent, accent="#38bdf8"):
+        hover = self.blend_color(accent, "#ffffff", 0.18)
+        return ctk.CTkScrollableFrame(
+            parent,
+            fg_color="transparent",
+            corner_radius=10,
+            scrollbar_button_color=accent,
+            scrollbar_button_hover_color=hover
+        )
 
     def process_serial_data(self, serial_data):
         if not serial_data:
@@ -950,7 +1314,7 @@ class YubiDash(ctk.CTk):
             self.show_message("🔌 Disconnected", "Scanner disconnected", "info")
 
     # ========================================================================
-    # MODAL CON SCROLL PARA VER DETALLES COMPLETOS CON HISTORIAL
+    # SCROLLABLE MODAL FOR FULL DETAILS WITH HISTORY
     # ========================================================================
     def show_item_details(self):
         selected = self.inv_tree.selection()
@@ -979,8 +1343,7 @@ class YubiDash(ctk.CTk):
                                  border_width=1, border_color="#334155")
         main_frame.pack(padx=20, pady=20, fill="both", expand=True)
         
-        scrollable_frame = ctk.CTkScrollableFrame(main_frame, fg_color="transparent",
-                                                 corner_radius=10)
+        scrollable_frame = self.create_scrollable_frame(main_frame, accent="#38bdf8")
         scrollable_frame.pack(fill="both", expand=True, padx=15, pady=15)
         
         ctk.CTkLabel(scrollable_frame, text=f"📱 {serial}",
@@ -1097,6 +1460,12 @@ class YubiDash(ctk.CTk):
         else:
             self.load_inventory_table()
 
+    def refresh_all_views(self):
+        for tipo in ('nueva', 'ingreso', 'asignacion', 'perdida'):
+            self.load_recent_data(tipo)
+        self.refresh_inventory_display()
+        self.load_reports()
+
     def edit_selected_inventory_item(self):
         original_serial, yubi_data = self.get_selected_inventory_item()
         if not yubi_data:
@@ -1115,8 +1484,8 @@ class YubiDash(ctk.CTk):
                                  border_width=1, border_color="#334155")
         main_frame.pack(fill="both", expand=True, padx=20, pady=20)
 
-        scrollable_frame = ctk.CTkScrollableFrame(main_frame, fg_color="transparent",
-                                                 corner_radius=10)
+        detail_accent = ESTADO_COLORES.get(yubi_data['estado'], "#38bdf8")
+        scrollable_frame = self.create_scrollable_frame(main_frame, accent=detail_accent)
         scrollable_frame.pack(fill="both", expand=True, padx=15, pady=15)
 
         ctk.CTkLabel(scrollable_frame, text=f"✏️ Edit {original_serial}",
@@ -1212,7 +1581,7 @@ class YubiDash(ctk.CTk):
                 with open(JSON_FILE, 'w', encoding='utf-8') as f:
                     json.dump(datos, f, indent=4, ensure_ascii=False)
 
-                self.refresh_inventory_display()
+                self.refresh_all_views()
                 modal.destroy()
                 self.show_message("✅ Updated", f"{new_serial} was updated successfully", "success")
             except Exception as e:
@@ -1251,14 +1620,16 @@ class YubiDash(ctk.CTk):
             with open(JSON_FILE, 'w', encoding='utf-8') as f:
                 json.dump(new_data, f, indent=4, ensure_ascii=False)
 
-            self.refresh_inventory_display()
+            self.refresh_all_views()
             self.show_message("✅ Deleted", f"{original_serial} was removed from the inventory", "success")
         except Exception as e:
             self.show_message("❌ Error", f"Could not delete the item:\n{e}", "error")
 
     def get_action_icon(self, action):
         icons = {
+            "Register": "🆕",
             "Registro": "🆕",
+            "Register": "🆕",
             "Check-in": "⬇️",
             "Check-out": "⬆️",
             "Assign": "👉",
@@ -1289,8 +1660,7 @@ class YubiDash(ctk.CTk):
                                  border_width=1, border_color="#334155")
         main_frame.pack(fill="both", expand=True, padx=20, pady=20)
         
-        scrollable_frame = ctk.CTkScrollableFrame(main_frame, fg_color="transparent",
-                                                 corner_radius=10)
+        scrollable_frame = self.create_scrollable_frame(main_frame, accent="#f59e0b")
         scrollable_frame.pack(fill="both", expand=True, padx=15, pady=15)
         
         if action_type == 'break_lunch':
@@ -1423,7 +1793,7 @@ Current State: {estado_actual.upper()}
 
     def setup_nueva_panel(self):
         header_frame = ctk.CTkFrame(self.panel_nueva, fg_color="transparent")
-        header_frame.pack(fill="x", padx=40, pady=(20, 10))
+        header_frame.pack(fill="x", padx=40, pady=(14, 4))
         
         ctk.CTkLabel(header_frame, text="📝 Register New Yubikey",
                     font=("Inter", RESPONSIVE.get_font_size(28), "bold"),
@@ -1431,19 +1801,25 @@ Current State: {estado_actual.upper()}
         
         ctk.CTkLabel(header_frame, text="Scan or manually enter the yubikey serial number",
                     font=("Inter", 13),
-                    text_color="#94a3b8").pack(pady=5)
+                    text_color="#94a3b8").pack(pady=(4, 2))
         
         input_card = ctk.CTkFrame(self.panel_nueva, fg_color=SLATE_GRAY,
                                  corner_radius=15, border_width=1,
                                  border_color="#334155")
-        input_card.pack(fill="x", padx=40, pady=20)
+        input_card.pack(fill="x", padx=40, pady=4)
         
         input_frame = ctk.CTkFrame(input_card, fg_color="transparent")
-        input_frame.pack(fill="x", padx=30, pady=25)
+        input_frame.pack(fill="x", padx=30, pady=10)
         
         ctk.CTkLabel(input_frame, text="Yubikey Serial:",
                     font=("Inter", RESPONSIVE.get_font_size(16), "bold"),
                     text_color="#e2e8f0").pack(anchor="w", pady=(0, 10))
+
+        self.tip_nueva_label = ctk.CTkLabel(input_frame,
+                            text="💡 Tip: Enter serial number, then press Enter",
+                            font=("Inter", 11),
+                            text_color="#7dd3fc")
+        self.tip_nueva_label.pack(anchor="w", pady=(0, 8))
         
         self.entry_nueva = ctk.CTkEntry(input_frame,
                                        placeholder_text="Type serial or use scanner...",
@@ -1467,8 +1843,9 @@ Current State: {estado_actual.upper()}
         self.btn_scan_nueva.pack(fill="x", pady=15)
         
         self.label_nueva = ctk.CTkLabel(input_card, text="",
-                                       font=("Inter", RESPONSIVE.get_font_size(14), "bold"))
-        self.label_nueva.pack(pady=15)
+                           font=("Inter", RESPONSIVE.get_font_size(14), "bold"),
+                           height=1)
+        self.label_nueva.pack(pady=(0, 2))
         
         self.setup_recent_table_responsive(self.panel_nueva, 'nueva')
 
@@ -1486,7 +1863,7 @@ Current State: {estado_actual.upper()}
 
     def setup_ingreso_panel(self):
         header_frame = ctk.CTkFrame(self.panel_ingreso, fg_color="transparent")
-        header_frame.pack(fill="x", padx=40, pady=(20, 10))
+        header_frame.pack(fill="x", padx=40, pady=(14, 4))
         
         ctk.CTkLabel(header_frame, text="⏸️ Break / Lunch Check-in/out",
                     font=("Inter", RESPONSIVE.get_font_size(28), "bold"),
@@ -1494,19 +1871,25 @@ Current State: {estado_actual.upper()}
         
         ctk.CTkLabel(header_frame, text="Only for yubikeys currently IN USE",
                     font=("Inter", 13),
-                    text_color="#94a3b8").pack(pady=5)
+                    text_color="#94a3b8").pack(pady=(4, 2))
         
         input_card = ctk.CTkFrame(self.panel_ingreso, fg_color=SLATE_GRAY,
                                  corner_radius=15, border_width=1,
                                  border_color="#334155")
-        input_card.pack(fill="x", padx=40, pady=20)
+        input_card.pack(fill="x", padx=40, pady=4)
         
         input_frame = ctk.CTkFrame(input_card, fg_color="transparent")
-        input_frame.pack(fill="x", padx=30, pady=25)
+        input_frame.pack(fill="x", padx=30, pady=10)
         
         ctk.CTkLabel(input_frame, text="Yubikey Serial:",
                     font=("Inter", RESPONSIVE.get_font_size(16), "bold"),
                     text_color="#e2e8f0").pack(anchor="w", pady=(0, 10))
+
+        self.tip_ingreso_label = ctk.CTkLabel(input_frame,
+                              text="💡 Tip: Scan while key is In Use for Break/Lunch flow",
+                              font=("Inter", 11),
+                              text_color="#fcd34d")
+        self.tip_ingreso_label.pack(anchor="w", pady=(0, 8))
         
         self.entry_ingreso = ctk.CTkEntry(input_frame,
                                          placeholder_text="Type serial or use scanner...",
@@ -1530,8 +1913,9 @@ Current State: {estado_actual.upper()}
         self.btn_scan_ingreso.pack(fill="x", pady=15)
         
         self.label_ingreso = ctk.CTkLabel(input_card, text="",
-                                         font=("Inter", RESPONSIVE.get_font_size(14), "bold"))
-        self.label_ingreso.pack(pady=15)
+                         font=("Inter", RESPONSIVE.get_font_size(14), "bold"),
+                         height=1)
+        self.label_ingreso.pack(pady=(0, 2))
         
         self.setup_recent_table_responsive(self.panel_ingreso, 'ingreso')
 
@@ -1591,7 +1975,7 @@ Current State: {estado_actual.upper()}
                                     text_color=SUCCESS_GREEN,
                                     font=("Inter", RESPONSIVE.get_font_size(14), "bold"))
         self.entry_ingreso.delete(0, 'end')
-        self.load_recent_data('ingreso')
+        self.refresh_all_views()
         self.after(3000, lambda: self.label_ingreso.configure(text=""))
 
     def ask_break_type(self, serial):
@@ -1609,8 +1993,7 @@ Current State: {estado_actual.upper()}
                                  border_width=1, border_color="#334155")
         main_frame.pack(fill="both", expand=True, padx=20, pady=20)
         
-        scrollable_frame = ctk.CTkScrollableFrame(main_frame, fg_color="transparent",
-                                                 corner_radius=10)
+        scrollable_frame = self.create_scrollable_frame(main_frame, accent="#f59e0b")
         scrollable_frame.pack(fill="both", expand=True, padx=15, pady=15)
         
         ctk.CTkLabel(scrollable_frame, text="⏸️ Change state to?",
@@ -1650,7 +2033,7 @@ Current State: {estado_actual.upper()}
 
     def setup_asignacion_panel(self):
         header_frame = ctk.CTkFrame(self.panel_asignacion, fg_color="transparent")
-        header_frame.pack(fill="x", padx=40, pady=(20, 10))
+        header_frame.pack(fill="x", padx=40, pady=(14, 4))
         
         ctk.CTkLabel(header_frame, text="🔄 Assign / Return",
                     font=("Inter", RESPONSIVE.get_font_size(28), "bold"),
@@ -1658,19 +2041,25 @@ Current State: {estado_actual.upper()}
         
         ctk.CTkLabel(header_frame, text="Assign available yubikeys or return in-use ones",
                     font=("Inter", 13),
-                    text_color="#94a3b8").pack(pady=5)
+                    text_color="#94a3b8").pack(pady=(4, 2))
         
         input_card = ctk.CTkFrame(self.panel_asignacion, fg_color=SLATE_GRAY,
                                  corner_radius=15, border_width=1,
                                  border_color="#334155")
-        input_card.pack(fill="x", padx=40, pady=20)
+        input_card.pack(fill="x", padx=40, pady=4)
         
         input_frame = ctk.CTkFrame(input_card, fg_color="transparent")
-        input_frame.pack(fill="x", padx=30, pady=25)
+        input_frame.pack(fill="x", padx=30, pady=10)
         
         ctk.CTkLabel(input_frame, text="Yubikey Serial:",
                     font=("Inter", RESPONSIVE.get_font_size(16), "bold"),
                     text_color="#e2e8f0").pack(anchor="w", pady=(0, 10))
+
+        self.tip_asignacion_label = ctk.CTkLabel(input_frame,
+                             text="💡 Tip: Assign from Available, Return from In Use",
+                             font=("Inter", 11),
+                             text_color="#c4b5fd")
+        self.tip_asignacion_label.pack(anchor="w", pady=(0, 8))
         
         self.entry_asignacion = ctk.CTkEntry(input_frame,
                                             placeholder_text="Type serial or use scanner...",
@@ -1694,8 +2083,9 @@ Current State: {estado_actual.upper()}
         self.btn_scan_asignacion.pack(fill="x", pady=15)
         
         self.label_asignacion = ctk.CTkLabel(input_card, text="",
-                                            font=("Inter", RESPONSIVE.get_font_size(14), "bold"))
-        self.label_asignacion.pack(pady=15)
+                            font=("Inter", RESPONSIVE.get_font_size(14), "bold"),
+                            height=1)
+        self.label_asignacion.pack(pady=(0, 2))
         
         self.setup_recent_table_responsive(self.panel_asignacion, 'asignacion')
 
@@ -1719,7 +2109,7 @@ Current State: {estado_actual.upper()}
 
     def setup_perdida_panel(self):
         header_frame = ctk.CTkFrame(self.panel_perdida, fg_color="transparent")
-        header_frame.pack(fill="x", padx=40, pady=(20, 10))
+        header_frame.pack(fill="x", padx=40, pady=(14, 4))
         
         ctk.CTkLabel(header_frame, text="⚠️ Loss / Damage Report",
                     font=("Inter", RESPONSIVE.get_font_size(28), "bold"),
@@ -1727,23 +2117,24 @@ Current State: {estado_actual.upper()}
         
         ctk.CTkLabel(header_frame, text="Report lost or damaged yubikeys",
                     font=("Inter", 13),
-                    text_color="#94a3b8").pack(pady=5)
+                    text_color="#94a3b8").pack(pady=(4, 2))
         
         input_card = ctk.CTkFrame(self.panel_perdida, fg_color=SLATE_GRAY,
                                  corner_radius=15, border_width=1,
                                  border_color="#334155")
-        input_card.pack(fill="x", padx=40, pady=20)
+        input_card.pack(fill="x", padx=40, pady=4)
         
         input_frame = ctk.CTkFrame(input_card, fg_color="transparent")
-        input_frame.pack(fill="x", padx=30, pady=25)
+        input_frame.pack(fill="x", padx=30, pady=10)
         
         ctk.CTkLabel(input_frame, text="Yubikey Serial OR Pipkins Code:",
                     font=("Inter", RESPONSIVE.get_font_size(16), "bold"),
                     text_color="#e2e8f0").pack(anchor="w", pady=(0, 10))
         
-        ctk.CTkLabel(input_frame, text="💡 Tip: Enter serial OR Pipkins code, then press Enter",
-                    font=("Inter", 11),
-                    text_color="#94a3b8").pack(anchor="w", pady=(0, 15))
+        self.tip_perdida_label = ctk.CTkLabel(input_frame, text="💡 Tip: Enter serial OR Pipkins code, then press Enter",
+                             font=("Inter", 11),
+                             text_color="#fca5a5")
+        self.tip_perdida_label.pack(anchor="w", pady=(0, 8))
         
         self.entry_perdida = ctk.CTkEntry(input_frame,
                                          placeholder_text="Type serial or Pipkins code...",
@@ -1767,8 +2158,9 @@ Current State: {estado_actual.upper()}
         self.btn_scan_perdida.pack(fill="x", pady=15)
         
         self.label_perdida = ctk.CTkLabel(input_card, text="",
-                                         font=("Inter", RESPONSIVE.get_font_size(14), "bold"))
-        self.label_perdida.pack(pady=15)
+                         font=("Inter", RESPONSIVE.get_font_size(14), "bold"),
+                         height=1)
+        self.label_perdida.pack(pady=(0, 2))
         
         self.setup_recent_table_responsive(self.panel_perdida, 'perdida')
 
@@ -1850,8 +2242,7 @@ Current State: {estado_actual.upper()}
                                  border_width=1, border_color="#334155")
         main_frame.pack(fill="both", expand=True, padx=20, pady=20)
         
-        scrollable_frame = ctk.CTkScrollableFrame(main_frame, fg_color="transparent",
-                                                 corner_radius=10)
+        scrollable_frame = self.create_scrollable_frame(main_frame, accent="#f59e0b")
         scrollable_frame.pack(fill="both", expand=True, padx=15, pady=15)
         
         ctk.CTkLabel(scrollable_frame, text=f"{icon} {message}",
@@ -1871,8 +2262,9 @@ Current State: {estado_actual.upper()}
             return
         tree.delete(*tree.get_children())
         movimientos = self.get_recent_movements(tipo)
-        for mov in movimientos:
-            tree.insert('', 'end', values=mov)
+        for idx, mov in enumerate(movimientos):
+            tag = f"{tipo}_even" if idx % 2 == 0 else f"{tipo}_odd"
+            tree.insert('', 'end', values=mov, tags=(tag,))
 
     def get_recent_movements(self, tipo):
         if not os.path.isfile(JSON_FILE):
@@ -1884,6 +2276,8 @@ Current State: {estado_actual.upper()}
             codigo = item.get('codigo_pipkins', '-')
             for h in item.get('historial', []):
                 if tipo == 'nueva' and h['accion'] == 'Registro':
+                    movs.append((item['serial'], codigo, h['accion'], h['fecha'], h['hora']))
+                elif tipo == 'nueva' and h['accion'] == 'Register':
                     movs.append((item['serial'], codigo, h['accion'], h['fecha'], h['hora']))
                 elif tipo == 'ingreso' and ('Break' in h['accion'] or 'Lunch' in h['accion']):
                     movs.append((item['serial'], codigo, h['accion'], h['fecha'], h['hora']))
@@ -1935,32 +2329,64 @@ Current State: {estado_actual.upper()}
         self.hide_all_panels()
         self.current_panel_name = 'nueva'
         self.panel_nueva.pack(fill="both", expand=True)
+        self.animate_panel_transition()
+        self.update_entry_border_colors()
+        self.update_scanner_buttons_state()
+        self.stop_tip_animations()
+        if hasattr(self, 'tip_nueva_label'):
+            self.animate_tip_label(self.tip_nueva_label, 'tip_nueva',
+                                   colors=("#7dd3fc", "#bae6fd", "#7dd3fc"))
 
     def show_ingreso_panel(self):
         self.hide_all_panels()
         self.current_panel_name = 'ingreso'
         self.panel_ingreso.pack(fill="both", expand=True)
+        self.animate_panel_transition()
+        self.update_entry_border_colors()
+        self.update_scanner_buttons_state()
+        self.stop_tip_animations()
+        if hasattr(self, 'tip_ingreso_label'):
+            self.animate_tip_label(self.tip_ingreso_label, 'tip_ingreso',
+                                   colors=("#fcd34d", "#fde68a", "#fcd34d"))
 
     def show_asignacion_panel(self):
         self.hide_all_panels()
         self.current_panel_name = 'asignacion'
         self.panel_asignacion.pack(fill="both", expand=True)
+        self.animate_panel_transition()
+        self.update_entry_border_colors()
+        self.update_scanner_buttons_state()
+        self.stop_tip_animations()
+        if hasattr(self, 'tip_asignacion_label'):
+            self.animate_tip_label(self.tip_asignacion_label, 'tip_asignacion',
+                                   colors=("#c4b5fd", "#ddd6fe", "#c4b5fd"))
 
     def show_perdida_panel(self):
         self.hide_all_panels()
         self.current_panel_name = 'perdida'
         self.panel_perdida.pack(fill="both", expand=True)
+        self.animate_panel_transition()
+        self.update_entry_border_colors()
+        self.update_scanner_buttons_state()
+        self.stop_tip_animations()
+        if hasattr(self, 'tip_perdida_label'):
+            self.animate_tip_label(self.tip_perdida_label, 'tip_perdida',
+                                   colors=("#fca5a5", "#fecaca", "#fca5a5"))
 
     def show_inv_view(self):
         self.hide_all_panels()
         self.current_panel_name = 'inventory'
         self.view_inv.pack(fill="both", expand=True)
+        self.animate_panel_transition()
+        self.stop_tip_animations()
         self.load_inventory_table()
 
     def show_report_view(self):
         self.hide_all_panels()
         self.current_panel_name = 'reports'
         self.view_report.pack(fill="both", expand=True)
+        self.animate_panel_transition()
+        self.stop_tip_animations()
         self.load_reports()
 
     def load_inventory_table(self):
@@ -2054,29 +2480,36 @@ Current State: {estado_actual.upper()}
         if hasattr(self, 'damage_tree'):
             self.damage_tree.delete(*self.damage_tree.get_children())
         
-        loss_count = 0
-        damage_count = 0
-        
+        loss_events = []
+        damage_events = []
+
         for item in datos:
             for h in item.get('historial', []):
+                event_tuple = (
+                    item['serial'],
+                    item.get('usuario', '-') or '-',
+                    item.get('codigo_pipkins', '-') or '-',
+                    h['fecha'],
+                    h['hora']
+                )
                 if h['accion'] == 'Loss':
-                    loss_count += 1
-                    self.loss_tree.insert('', 'end', values=(
-                        item['serial'],
-                        item.get('usuario', '-'),
-                        item.get('codigo_pipkins', '-'),
-                        h['fecha'],
-                        h['hora']
-                    ))
+                    loss_events.append(event_tuple)
                 elif h['accion'] == 'Damage':
-                    damage_count += 1
-                    self.damage_tree.insert('', 'end', values=(
-                        item['serial'],
-                        item.get('usuario', '-'),
-                        item.get('codigo_pipkins', '-'),
-                        h['fecha'],
-                        h['hora']
-                    ))
+                    damage_events.append(event_tuple)
+
+        loss_events.sort(key=lambda x: f"{x[3]} {x[4]}", reverse=True)
+        damage_events.sort(key=lambda x: f"{x[3]} {x[4]}", reverse=True)
+
+        for idx, values in enumerate(loss_events):
+            tag = 'loss_even' if idx % 2 == 0 else 'loss_odd'
+            self.loss_tree.insert('', 'end', values=values, tags=(tag,))
+
+        for idx, values in enumerate(damage_events):
+            tag = 'damage_even' if idx % 2 == 0 else 'damage_odd'
+            self.damage_tree.insert('', 'end', values=values, tags=(tag,))
+
+        loss_count = len(loss_events)
+        damage_count = len(damage_events)
         
         if hasattr(self, 'loss_count_label'):
             self.loss_count_label.configure(text=str(loss_count))
@@ -2116,6 +2549,11 @@ Current State: {estado_actual.upper()}
         if hasattr(self, 'summary_text'):
             self.summary_text.delete("1.0", "end")
             self.summary_text.insert("1.0", summary)
+
+        if hasattr(self, 'report_last_update_label'):
+            self.report_last_update_label.configure(
+                text=f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            )
 
     def export_loss_report(self):
         filename = filedialog.asksaveasfilename(
@@ -2190,8 +2628,7 @@ Current State: {estado_actual.upper()}
                                  border_width=1, border_color="#334155")
         main_frame.pack(padx=24, pady=24, fill="both", expand=True)
         
-        scrollable_frame = ctk.CTkScrollableFrame(main_frame, fg_color="transparent",
-                                                 corner_radius=10)
+        scrollable_frame = self.create_scrollable_frame(main_frame, accent="#38bdf8")
         scrollable_frame.pack(fill="both", expand=True, padx=15, pady=15)
         
         ctk.CTkLabel(scrollable_frame, text="📝 Complete Registration",
@@ -2251,7 +2688,7 @@ Current State: {estado_actual.upper()}
             "estado": "In Use",
             "ultima_conexion": now.strftime("%Y-%m-%d"),
             "historial": [{
-                "accion": "Registro",
+                "accion": "Register",
                 "fecha": now.strftime("%Y-%m-%d"),
                 "hora": now.strftime("%H:%M:%S"),
                 "usuario": usuario,
@@ -2271,26 +2708,27 @@ Current State: {estado_actual.upper()}
                                   text_color=SUCCESS_GREEN,
                                   font=("Inter", RESPONSIVE.get_font_size(14), "bold"))
         self.entry_nueva.delete(0, 'end')
-        self.load_recent_data('nueva')
-        self.load_inventory_table()
+        self.refresh_all_views()
         self.after(3000, lambda: self.label_nueva.configure(text=""))
 
     def setup_recent_table_responsive(self, parent, tipo):
+        theme = self.get_panel_theme(tipo)
+
         table_card = ctk.CTkFrame(parent, fg_color=SLATE_GRAY,
                                  corner_radius=15, border_width=1,
                                  border_color="#334155")
-        table_card.pack(fill="both", expand=True, padx=40, pady=20)
+        table_card.pack(fill="both", expand=True, padx=40, pady=(2, 8))
         
         header = ctk.CTkFrame(table_card, fg_color="transparent")
-        header.pack(fill="x", padx=20, pady=(15, 10))
+        header.pack(fill="x", padx=20, pady=(8, 4))
         
         ctk.CTkLabel(header, text="📋 Recent Movements",
                     font=("Inter", RESPONSIVE.get_font_size(16), "bold"),
-                    text_color="#38bdf8").pack(anchor="w")
+                    text_color=theme['accent']).pack(anchor="w")
         
         tree_frame = ctk.CTkFrame(table_card, fg_color="#0f172a",
                                  corner_radius=10)
-        tree_frame.pack(fill="both", expand=True, padx=20, pady=10)
+        tree_frame.pack(fill="both", expand=True, padx=20, pady=(2, 8))
         
         columns = ("Serial", "Pipkins", "Action", "Date", "Time")
         
@@ -2299,24 +2737,29 @@ Current State: {estado_actual.upper()}
         
         style.configure(f'{tipo}.Treeview',
                        font=('Inter', RESPONSIVE.get_font_size(11)),
-                       rowheight=32,
-                       background="#0f172a",
-                       fieldbackground="#0f172a",
+                       rowheight=30,
+                       background=theme['row'],
+                       fieldbackground=theme['row'],
                        foreground="#e2e8f0",
                        borderwidth=0)
         
         style.configure(f'{tipo}.Treeview.Heading',
                        font=('Inter', RESPONSIVE.get_font_size(12), "bold"),
                        background="#1e293b",
-                       foreground="#38bdf8",
+                       foreground=theme['accent'],
                        borderwidth=0)
         
         style.map(f'{tipo}.Treeview',
-                 background=[('selected', '#3b82f6')],
+                 background=[('selected', theme['selected'])],
                  foreground=[('selected', 'white')])
+
+        tree_even_tag = f'{tipo}_even'
+        tree_odd_tag = f'{tipo}_odd'
         
         tree = ttk.Treeview(tree_frame, columns=columns, show='headings',
-                           height=6, style=f'{tipo}.Treeview')
+                           height=16, style=f'{tipo}.Treeview')
+        tree.tag_configure(tree_even_tag, background=theme['row'])
+        tree.tag_configure(tree_odd_tag, background=theme['row_alt'])
         
         col_widths = {
             "Serial": 180,
@@ -2330,8 +2773,11 @@ Current State: {estado_actual.upper()}
             tree.heading(col, text=col, anchor="w")
             tree.column(col, anchor="w", width=col_widths.get(col, 150), minwidth=80)
         
-        scrollbar_y = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
-        scrollbar_x = ttk.Scrollbar(tree_frame, orient="horizontal", command=tree.xview)
+        self.configure_scrollbar_style(f"Recent.{tipo}", theme['accent'], theme['accent_hover'])
+        scrollbar_y = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview,
+                       style=f"Recent.{tipo}.Vertical.TScrollbar")
+        scrollbar_x = ttk.Scrollbar(tree_frame, orient="horizontal", command=tree.xview,
+                       style=f"Recent.{tipo}.Horizontal.TScrollbar")
         tree.configure(yscrollcommand=scrollbar_y.set, xscrollcommand=scrollbar_x.set)
         
         tree.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
@@ -2444,8 +2890,8 @@ Current State: {estado_actual.upper()}
                        foreground="#38bdf8")
         
         style.map('Custom.Treeview',
-                 background=[('selected', '#3b82f6')],
-                 foreground=[('selected', 'white')])
+                 background=[('selected', '#ffffff')],
+                 foreground=[('selected', '#0f172a')])
         
         for estado, color in ESTADO_COLORES.items():
             self.inv_tree.tag_configure(estado, background=color, foreground="white")
@@ -2462,8 +2908,11 @@ Current State: {estado_actual.upper()}
             self.inv_tree.heading(col, text=col, anchor="w")
             self.inv_tree.column(col, anchor="w", width=col_widths_inv.get(col, 150), minwidth=100)
         
-        scrollbar_y = ttk.Scrollbar(tree_frame, orient="vertical", command=self.inv_tree.yview)
-        scrollbar_x = ttk.Scrollbar(tree_frame, orient="horizontal", command=self.inv_tree.xview)
+        self.configure_scrollbar_style("Inventory", "#38bdf8", "#0ea5e9")
+        scrollbar_y = ttk.Scrollbar(tree_frame, orient="vertical", command=self.inv_tree.yview,
+                       style="Inventory.Vertical.TScrollbar")
+        scrollbar_x = ttk.Scrollbar(tree_frame, orient="horizontal", command=self.inv_tree.xview,
+                       style="Inventory.Horizontal.TScrollbar")
         self.inv_tree.configure(yscrollcommand=scrollbar_y.set, xscrollcommand=scrollbar_x.set)
         
         self.inv_tree.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
@@ -2490,8 +2939,7 @@ Current State: {estado_actual.upper()}
                                  border_width=1, border_color="#334155")
         main_frame.pack(fill="both", expand=True, padx=20, pady=20)
         
-        scrollable_frame = ctk.CTkScrollableFrame(main_frame, fg_color="transparent",
-                                                 corner_radius=10)
+        scrollable_frame = self.create_scrollable_frame(main_frame, accent="#8b5cf6")
         scrollable_frame.pack(fill="both", expand=True, padx=15, pady=15)
         
         ctk.CTkLabel(scrollable_frame, text="🔄 Return Yubikey",
@@ -2507,7 +2955,7 @@ Current State: {estado_actual.upper()}
                                      corner_radius=10)
         comment_text.pack(pady=10, padx=30)
         try:
-            modal.after(100, lambda: comment_text.focus())
+            modal.after(100, lambda: self.safe_focus_widget(modal, comment_text))
         except:
             pass
         
@@ -2564,8 +3012,7 @@ Current State: {estado_actual.upper()}
                                        text_color=SUCCESS_GREEN,
                                        font=("Inter", RESPONSIVE.get_font_size(14), "bold"))
         self.entry_asignacion.delete(0, 'end')
-        self.load_recent_data('asignacion')
-        self.load_inventory_table()
+        self.refresh_all_views()
         self.after(3000, lambda: self.label_asignacion.configure(text=""))
 
     def ask_nuevo_usuario_pipkins(self, serial):
@@ -2583,8 +3030,7 @@ Current State: {estado_actual.upper()}
                                  border_width=1, border_color="#334155")
         main_frame.pack(padx=24, pady=24, fill="both", expand=True)
         
-        scrollable_frame = ctk.CTkScrollableFrame(main_frame, fg_color="transparent",
-                                                 corner_radius=10)
+        scrollable_frame = self.create_scrollable_frame(main_frame, accent="#38bdf8")
         scrollable_frame.pack(fill="both", expand=True, padx=15, pady=15)
         
         ctk.CTkLabel(scrollable_frame, text="🔄 Assign Yubikey",
@@ -2666,8 +3112,7 @@ Current State: {estado_actual.upper()}
                                        text_color=SUCCESS_GREEN,
                                        font=("Inter", RESPONSIVE.get_font_size(14), "bold"))
         self.entry_asignacion.delete(0, 'end')
-        self.load_recent_data('asignacion')
-        self.load_inventory_table()
+        self.refresh_all_views()
         self.after(3000, lambda: self.label_asignacion.configure(text=""))
 
     def ask_loss_damage_type(self, serial, found_by, search_value):
@@ -2685,8 +3130,7 @@ Current State: {estado_actual.upper()}
                                  border_width=1, border_color="#334155")
         main_frame.pack(fill="both", expand=True, padx=20, pady=20)
         
-        scrollable_frame = ctk.CTkScrollableFrame(main_frame, fg_color="transparent",
-                                                 corner_radius=10)
+        scrollable_frame = self.create_scrollable_frame(main_frame, accent="#ef4444")
         scrollable_frame.pack(fill="both", expand=True, padx=15, pady=15)
         
         ctk.CTkLabel(scrollable_frame, text="⚠️ Select Incident Type",
@@ -2744,8 +3188,8 @@ Current State: {estado_actual.upper()}
                                  border_width=1, border_color="#334155")
         main_frame.pack(fill="both", expand=True, padx=20, pady=20)
         
-        scrollable_frame = ctk.CTkScrollableFrame(main_frame, fg_color="transparent",
-                                                 corner_radius=10)
+        comment_accent = "#ef4444" if tipo_incidente == "Loss" else "#8b5cf6"
+        scrollable_frame = self.create_scrollable_frame(main_frame, accent=comment_accent)
         scrollable_frame.pack(fill="both", expand=True, padx=15, pady=15)
         
         ctk.CTkLabel(scrollable_frame, text=f"📝 {tipo_incidente} Report",
@@ -2776,7 +3220,7 @@ Found via: {found_by} ({search_value})"""
                                      corner_radius=10)
         comment_text.pack(pady=10, padx=30)
         try:
-            modal.after(100, lambda: comment_text.focus())
+            modal.after(100, lambda: self.safe_focus_widget(modal, comment_text))
         except:
             pass
         
@@ -2829,17 +3273,21 @@ Found via: {found_by} ({search_value})"""
                                     text_color=SUCCESS_GREEN,
                                     font=("Inter", RESPONSIVE.get_font_size(14), "bold"))
         self.entry_perdida.delete(0, 'end')
-        self.load_recent_data('perdida')
-        self.load_inventory_table()
+        self.refresh_all_views()
         self.after(3000, lambda: self.label_perdida.configure(text=""))
 
     def on_closing(self):
+        if self.ui_animation_job:
+            try:
+                self.after_cancel(self.ui_animation_job)
+            except Exception:
+                pass
         if self.scanner.is_connected:
             self.scanner.disconnect()
         self.destroy()
 
 # ============================================================================
-# PUNTO DE ENTRADA
+    # ENTRY POINT
 # ============================================================================
 if __name__ == "__main__":
     app = YubiDash()

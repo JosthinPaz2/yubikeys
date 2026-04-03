@@ -610,5 +610,32 @@
                 "comentario": "Reported via damage panel"
             }
         ]
+    },
+    {
+        "serial": "YK-080",
+        "usuario": "josthin paz",
+        "codigo_pipkins": "617157",
+        "estado": "Loss",
+        "ultima_conexion": "2026-04-02",
+        "historial": [
+            {
+                "accion": "Register",
+                "fecha": "2026-04-02",
+                "hora": "17:10:31",
+                "usuario": "josthin paz",
+                "codigo_pipkins": "617157",
+                "estado": "In Use",
+                "comentario": "Initial registration"
+            },
+            {
+                "accion": "Loss",
+                "fecha": "2026-04-02",
+                "hora": "17:36:03",
+                "estado": "Loss",
+                "usuario": "josthin paz",
+                "codigo_pipkins": "617157",
+                "comentario": "fdgdf"
+            }
+        ]
     }
 ]
