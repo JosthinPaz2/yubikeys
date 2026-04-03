@@ -637,5 +637,257 @@
                 "comentario": "fdgdf"
             }
         ]
+    },
+    {
+        "serial": "YK-081",
+        "usuario": "dfgdfgdfgdfg",
+        "codigo_pipkins": "123456789",
+        "estado": "Damage",
+        "ultima_conexion": "2026-04-02",
+        "historial": [
+            {
+                "accion": "Register",
+                "fecha": "2026-04-02",
+                "hora": "19:48:42",
+                "usuario": "dfsdfsfd",
+                "codigo_pipkins": "sdfsfd",
+                "estado": "In Use",
+                "comentario": "Initial registration"
+            },
+            {
+                "accion": "Check-in to Break",
+                "fecha": "2026-04-02",
+                "hora": "19:48:57",
+                "estado": "On Break",
+                "usuario": "dfsdfsfd",
+                "codigo_pipkins": "sdfsfd",
+                "comentario": "Check-in to Break"
+            },
+            {
+                "accion": "Check-out from Break/Lunch",
+                "fecha": "2026-04-02",
+                "hora": "20:01:30",
+                "estado": "In Use",
+                "usuario": "dfsdfsfd",
+                "codigo_pipkins": "sdfsfd",
+                "comentario": "Check-out from Break/Lunch"
+            },
+            {
+                "accion": "Check-in to Break",
+                "fecha": "2026-04-02",
+                "hora": "20:06:49",
+                "estado": "On Break",
+                "usuario": "dfsdfsfd",
+                "codigo_pipkins": "sdfsfd",
+                "comentario": "Check-in to Break"
+            },
+            {
+                "accion": "Check-out from Break/Lunch",
+                "fecha": "2026-04-02",
+                "hora": "20:06:59",
+                "estado": "In Use",
+                "usuario": "dfsdfsfd",
+                "codigo_pipkins": "sdfsfd",
+                "comentario": "Check-out from Break/Lunch"
+            },
+            {
+                "accion": "Return (previous: dfsdfsfd)",
+                "fecha": "2026-04-02",
+                "hora": "20:07:12",
+                "estado": "Available",
+                "usuario": "",
+                "codigo_pipkins": "",
+                "comentario": "aewaeqwe"
+            },
+            {
+                "accion": "Assign to asdasd",
+                "fecha": "2026-04-02",
+                "hora": "20:07:25",
+                "estado": "In Use",
+                "usuario": "asdasd",
+                "codigo_pipkins": "sadasdasd",
+                "comentario": "Assigned via Assign/Return panel"
+            },
+            {
+                "accion": "Check-in to Lunch",
+                "fecha": "2026-04-02",
+                "hora": "20:23:05",
+                "estado": "On Lunch",
+                "usuario": "asdasd",
+                "codigo_pipkins": "sadasdasd",
+                "comentario": "Check-in to Lunch"
+            },
+            {
+                "accion": "Check-out from Break/Lunch",
+                "fecha": "2026-04-02",
+                "hora": "20:23:12",
+                "estado": "In Use",
+                "usuario": "asdasd",
+                "codigo_pipkins": "sadasdasd",
+                "comentario": "Check-out from Break/Lunch"
+            },
+            {
+                "accion": "Return (previous: asdasd)",
+                "fecha": "2026-04-02",
+                "hora": "20:23:22",
+                "estado": "Available",
+                "usuario": "",
+                "codigo_pipkins": "",
+                "comentario": "sdfsdfsdfsdfsdfs"
+            },
+            {
+                "accion": "Assign to dfgdfgdfgdfg",
+                "fecha": "2026-04-02",
+                "hora": "20:23:34",
+                "estado": "In Use",
+                "usuario": "dfgdfgdfgdfg",
+                "codigo_pipkins": "123456789",
+                "comentario": "Assigned via Assign/Return panel"
+            },
+            {
+                "accion": "Damage",
+                "fecha": "2026-04-02",
+                "hora": "20:23:47",
+                "estado": "Damage",
+                "usuario": "dfgdfgdfgdfg",
+                "codigo_pipkins": "123456789",
+                "comentario": "zsdsadasdasd"
+            }
+        ]
+    },
+    {
+        "serial": "YK-082",
+        "usuario": "asdasd",
+        "codigo_pipkins": "asdasd",
+        "estado": "In Use",
+        "ultima_conexion": "2026-04-02",
+        "historial": [
+            {
+                "accion": "Register",
+                "fecha": "2026-04-02",
+                "hora": "19:56:08",
+                "usuario": "dsfsdf",
+                "codigo_pipkins": "sdfsdf",
+                "estado": "In Use",
+                "comentario": "Initial registration"
+            },
+            {
+                "accion": "Check-in to Break",
+                "fecha": "2026-04-02",
+                "hora": "20:11:47",
+                "estado": "On Break",
+                "usuario": "dsfsdf",
+                "codigo_pipkins": "sdfsdf",
+                "comentario": "Check-in to Break"
+            },
+            {
+                "accion": "Check-out from Break/Lunch",
+                "fecha": "2026-04-02",
+                "hora": "20:11:54",
+                "estado": "In Use",
+                "usuario": "dsfsdf",
+                "codigo_pipkins": "sdfsdf",
+                "comentario": "Check-out from Break/Lunch"
+            },
+            {
+                "accion": "Return (previous: dsfsdf)",
+                "fecha": "2026-04-02",
+                "hora": "20:12:13",
+                "estado": "Available",
+                "usuario": "",
+                "codigo_pipkins": "",
+                "comentario": "wedasdasd"
+            },
+            {
+                "accion": "Assign to asdasd",
+                "fecha": "2026-04-02",
+                "hora": "20:12:25",
+                "estado": "In Use",
+                "usuario": "asdasd",
+                "codigo_pipkins": "asdasd",
+                "comentario": "Assigned via Assign/Return panel"
+            }
+        ]
+    },
+    {
+        "serial": "YK-083",
+        "usuario": "asdasd",
+        "codigo_pipkins": "asdasd",
+        "estado": "In Use",
+        "ultima_conexion": "2026-04-02",
+        "historial": [
+            {
+                "accion": "Register",
+                "fecha": "2026-04-02",
+                "hora": "20:01:13",
+                "usuario": "asdasd",
+                "codigo_pipkins": "asdasd",
+                "estado": "In Use",
+                "comentario": "Initial registration"
+            }
+        ]
+    },
+    {
+        "serial": "YK-084",
+        "usuario": "sdfsdfsdfsdf",
+        "codigo_pipkins": "617158",
+        "estado": "Loss",
+        "ultima_conexion": "2026-04-02",
+        "historial": [
+            {
+                "accion": "Register",
+                "fecha": "2026-04-02",
+                "hora": "20:10:51",
+                "usuario": "sdfsdfsdfsdf",
+                "codigo_pipkins": "617158",
+                "estado": "In Use",
+                "comentario": "Initial registration"
+            },
+            {
+                "accion": "Loss",
+                "fecha": "2026-04-02",
+                "hora": "20:13:14",
+                "estado": "Loss",
+                "usuario": "sdfsdfsdfsdf",
+                "codigo_pipkins": "617158",
+                "comentario": "sadasd"
+            }
+        ]
+    },
+    {
+        "serial": "YK-61",
+        "usuario": "sdfsdf",
+        "codigo_pipkins": "617157",
+        "estado": "In Use",
+        "ultima_conexion": "2026-04-02",
+        "historial": [
+            {
+                "accion": "Register",
+                "fecha": "2026-04-02",
+                "hora": "20:11:13",
+                "usuario": "sdfsdf",
+                "codigo_pipkins": "617157",
+                "estado": "In Use",
+                "comentario": "Initial registration"
+            }
+        ]
+    },
+    {
+        "serial": "YK-086",
+        "usuario": "sadasdasd",
+        "codigo_pipkins": "617159",
+        "estado": "On Break",
+        "ultima_conexion": "2026-04-02",
+        "historial": [
+            {
+                "accion": "Register",
+                "fecha": "2026-04-02",
+                "hora": "20:18:30",
+                "usuario": "sadasdasd",
+                "codigo_pipkins": "617159",
+                "estado": "In Use",
+                "comentario": "Initial registration"
+            }
+        ]
     }
 ]

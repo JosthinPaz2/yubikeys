@@ -6,10 +6,11 @@
 import customtkinter as ctk
 import json
 import os
+import tkinter as tk
 import tkinter.ttk as ttk
 from datetime import datetime
 import csv
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, TclError
 import serial
 import serial.tools.list_ports
 import threading
@@ -22,6 +23,17 @@ import struct
 # ============================================================================
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
+
+_original_focus_set = tk.Misc.focus_set
+
+def _safe_focus_set(self):
+    try:
+        return _original_focus_set(self)
+    except TclError:
+        return None
+
+
+tk.Misc.focus_set = _safe_focus_set
 
 MIDNIGHT_BLUE = "#0f172a"
 SLATE_GRAY = "#1e293b"
@@ -64,7 +76,8 @@ class ResponsiveConfig:
     
     def detect_screen(self):
         try:
-            root = ctk.CTk()
+            root = tk.Tk()
+            root.withdraw()
             self.screen_width = root.winfo_screenwidth()
             self.screen_height = root.winfo_screenheight()
             root.destroy()
@@ -215,6 +228,7 @@ class SerialScanner:
 class YubiDash(ctk.CTk):
     def __init__(self):
         super().__init__()
+        self.setup_tk_error_guards()
         
         self.title("Yubikey Management Dashboard - WFM System")
         self.setup_app_identity_and_icon()
@@ -239,13 +253,54 @@ class YubiDash(ctk.CTk):
         self.tip_animation_jobs = {}
         self.ui_animation_job = None
         self.ui_animation_phase = 0
+        self.toast_container = None
+        self.toast_close_jobs = {}
+        self.toast_windows = []
         
         self.initialize_database()
         self.setup_ui()
-        self.start_ui_animations()
+        self.after(0, self.start_ui_animations)
         
         device_type = "💻 Laptop" if RESPONSIVE.is_laptop else "🖥️ Desktop"
         print(f"✓ YubiDash started - {device_type} ({self.screen_width}x{self.screen_height})")
+
+    def setup_tk_error_guards(self):
+        def ignored_tk_message(message):
+            text = str(message or "")
+            ignored_fragments = (
+                "bad window path name",
+                "invalid command name",
+                "can't invoke",
+                "click_animation",
+            )
+            return any(fragment in text for fragment in ignored_fragments)
+
+        try:
+            self.tk.eval(
+                """
+                proc bgerror {msg} {
+                    set txt [string tolower $msg]
+                    if {[string first "invalid command name" $txt] >= 0 ||
+                        [string first "bad window path name" $txt] >= 0 ||
+                        [string first "can't invoke" $txt] >= 0 ||
+                        [string first "click_animation" $txt] >= 0} {
+                        return
+                    }
+                    puts stderr "Tk bgerror: $msg"
+                }
+                """
+            )
+        except Exception:
+            pass
+
+        def safe_callback_exception(exc, val, tb):
+            if isinstance(val, TclError) and ignored_tk_message(val):
+                return
+            if ignored_tk_message(val):
+                return
+            raise val
+
+        self.report_callback_exception = safe_callback_exception
 
     def generate_brand_icon_bytes(self, size=64):
         # Dark background with cyan "C" shape to match the in-app icon style.
@@ -940,8 +995,8 @@ class YubiDash(ctk.CTk):
                 
                 if self.scanner.connect(port, baud):
                     self.update_scanner_status(True, port)
-                    self.show_message("✅ Connected",
-                                    f"Connected to {port} @ {baud} baud",
+                    self.show_message("Scanner connected",
+                                    f"Connected to {port} at {baud} baud.",
                                     "success")
                     if self.pending_scanner_panel:
                         panel = self.pending_scanner_panel
@@ -950,16 +1005,16 @@ class YubiDash(ctk.CTk):
                         self.scanner_active = True
                         self.current_panel_name = panel
                         self.update_scanner_buttons_state()
-                        self.show_message("📡 Scanner Active",
-                                        f"Scanning on panel: {panel.upper()}\n\nPoint the scanner now",
+                        self.show_message("Scanner ready",
+                                        f"Scanning on the {panel.upper()} panel.\n\nPoint the scanner now.",
                                         "success")
                     modal.destroy()
                 else:
-                    self.show_message("❌ Connection Error",
-                                    f"Could not connect to {port}",
+                    self.show_message("Connection error",
+                                    f"Could not connect to {port}. Check the port and try again.",
                                     "error")
             else:
-                self.show_message("⚠️ No Ports", "No serial ports available", "warning")
+                self.show_message("No ports detected", "No serial ports were found on this computer.", "warning")
 
         def refresh_ports():
             nonlocal ports
@@ -992,8 +1047,8 @@ class YubiDash(ctk.CTk):
                 self.scanner.disable_auto_scan()
                 self.scanner_active = False
                 self.update_scanner_buttons_state()
-                self.show_message("⏹️ Scanner Stopped",
-                                "Scanner has been deactivated",
+                self.show_message("Scanner stopped",
+                                "Automatic scanning has been disabled.",
                                 "info")
             else:
                 self.scanner.enable_auto_scan(panel)
@@ -1001,8 +1056,8 @@ class YubiDash(ctk.CTk):
                 self.pending_scanner_panel = None
                 self.current_panel_name = panel
                 self.update_scanner_buttons_state()
-                self.show_message("📡 Scanner Active",
-                                f"Scanning on panel: {panel.upper()}\n\nPoint the scanner now",
+                self.show_message("Scanner ready",
+                                f"Scanning on the {panel.upper()} panel.\n\nPoint the scanner now.",
                                 "success")
 
     def update_scanner_buttons_state(self):
@@ -1043,11 +1098,55 @@ class YubiDash(ctk.CTk):
         return self._rgb_to_hex(mixed)
 
     def safe_focus_widget(self, parent, widget):
-        try:
-            if parent and parent.winfo_exists() and widget and widget.winfo_exists():
-                widget.focus_set()
-        except Exception:
-            pass
+        return
+
+    def ask_confirmation(self, title, message, confirm_text="Confirm", cancel_text="Cancel", accent="#ef4444"):
+        result = {"value": False}
+
+        modal = ctk.CTkToplevel(self)
+        modal.title(title)
+        modal.transient(self)
+        modal.grab_set()
+
+        modal_width = 480 if not RESPONSIVE.is_laptop else 420
+        modal_height = 260 if not RESPONSIVE.is_laptop else 230
+        modal.geometry(RESPONSIVE.center_modal(self, modal_width, modal_height))
+        modal.minsize(360, 220)
+
+        main_frame = ctk.CTkFrame(modal, fg_color=SLATE_GRAY, corner_radius=18,
+                                 border_width=1, border_color="#334155")
+        main_frame.pack(fill="both", expand=True, padx=18, pady=18)
+
+        content = ctk.CTkFrame(main_frame, fg_color="transparent")
+        content.pack(fill="both", expand=True, padx=16, pady=16)
+
+        ctk.CTkLabel(content, text=title, font=("Inter", RESPONSIVE.get_font_size(20), "bold"),
+                    text_color=accent).pack(pady=(6, 10))
+        ctk.CTkLabel(content, text=message, font=("Inter", 13), text_color="#e2e8f0",
+                    justify="center", wraplength=360).pack(pady=(0, 18))
+
+        button_frame = ctk.CTkFrame(content, fg_color="transparent")
+        button_frame.pack(pady=(0, 6))
+
+        def confirm():
+            result["value"] = True
+            modal.destroy()
+
+        def cancel():
+            modal.destroy()
+
+        ctk.CTkButton(button_frame, text=confirm_text, command=confirm,
+                     fg_color=accent, hover_color="#dc2626" if accent == "#ef4444" else "#0ea5e9",
+                     font=("Inter", RESPONSIVE.get_font_size(14), "bold"),
+                     width=130, height=40, corner_radius=10).pack(side="left", padx=10)
+        ctk.CTkButton(button_frame, text=cancel_text, command=cancel,
+                     fg_color="#475569", hover_color="#64748b",
+                     font=("Inter", RESPONSIVE.get_font_size(14)),
+                     width=120, height=40, corner_radius=10).pack(side="left", padx=10)
+
+        modal.protocol("WM_DELETE_WINDOW", cancel)
+        self.wait_window(modal)
+        return result["value"]
 
     def animate_panel_transition(self):
         try:
@@ -1311,7 +1410,7 @@ class YubiDash(ctk.CTk):
             self.scanner.disconnect()
             self.pending_scanner_panel = None
             self.update_scanner_status(False)
-            self.show_message("🔌 Disconnected", "Scanner disconnected", "info")
+            self.show_message("Scanner disconnected", "The serial connection was closed.", "info")
 
     # ========================================================================
     # SCROLLABLE MODAL FOR FULL DETAILS WITH HISTORY
@@ -1319,7 +1418,7 @@ class YubiDash(ctk.CTk):
     def show_item_details(self):
         selected = self.inv_tree.selection()
         if not selected:
-            self.show_message("⚠️ Select Item", "Please select a yubikey from the table", "warning")
+            self.show_message("Select a yubikey", "Choose a row in the table first.", "warning")
             return
         
         item = self.inv_tree.item(selected[0])
@@ -1437,19 +1536,19 @@ class YubiDash(ctk.CTk):
     def get_selected_inventory_item(self):
         selected = self.inv_tree.selection()
         if not selected:
-            self.show_message("⚠️ Select Item", "Please select a yubikey from the table", "warning")
+            self.show_message("Select a yubikey", "Choose a row in the table first.", "warning")
             return None, None
 
         item = self.inv_tree.item(selected[0])
         values = item.get('values', [])
         if not values:
-            self.show_message("⚠️ Select Item", "The selected row is empty", "warning")
+            self.show_message("Empty selection", "The selected row has no data.", "warning")
             return None, None
 
         serial = values[0]
         yubi_data = self.find_yubikey(serial)
         if not yubi_data:
-            self.show_message("❌ Not Found", "The selected yubikey was not found in the inventory file", "error")
+            self.show_message("Item not found", "The selected yubikey was not found in the inventory.", "error")
             return None, None
 
         return serial, yubi_data
@@ -1551,12 +1650,13 @@ class YubiDash(ctk.CTk):
                 self.show_message("⚠️ Validation", "Serial cannot be empty", "warning")
                 return
 
-            if new_serial.upper() != original_serial.upper() and self.serial_exists(new_serial):
-                self.show_message("⚠️ Validation", "That serial already exists in the inventory", "warning")
-                return
-
             if not new_state:
                 self.show_message("⚠️ Validation", "State cannot be empty", "warning")
+                return
+
+            duplicate_message = self.duplicate_identifier_message(new_serial, new_pipkins, exclude_serial=original_serial)
+            if duplicate_message:
+                self.show_message("Duplicate value", duplicate_message, "warning")
                 return
 
             try:
@@ -1575,7 +1675,7 @@ class YubiDash(ctk.CTk):
                         break
 
                 if not updated:
-                    self.show_message("❌ Not Found", "The selected yubikey could not be updated", "error")
+                    self.show_message("Update failed", "The selected yubikey could not be updated.", "error")
                     return
 
                 with open(JSON_FILE, 'w', encoding='utf-8') as f:
@@ -1583,9 +1683,9 @@ class YubiDash(ctk.CTk):
 
                 self.refresh_all_views()
                 modal.destroy()
-                self.show_message("✅ Updated", f"{new_serial} was updated successfully", "success")
+                self.show_message("Item updated", f"{new_serial} was updated successfully.", "success")
             except Exception as e:
-                self.show_message("❌ Error", f"Could not save changes:\n{e}", "error")
+                self.show_message("Save failed", f"Could not save the changes:\n{e}", "error")
 
         ctk.CTkButton(btn_frame, text="💾 Save Changes", command=save_changes,
                      fg_color="#f59e0b", hover_color="#d97706",
@@ -1601,9 +1701,12 @@ class YubiDash(ctk.CTk):
         if not yubi_data:
             return
 
-        confirm = messagebox.askyesno(
+        confirm = self.ask_confirmation(
             "Delete Inventory Item",
-            f"Delete {original_serial}?\n\nThis will remove the item from the inventory file."
+            f"Delete {original_serial}?\n\nThis will remove the item from the inventory file.",
+            confirm_text="Delete",
+            cancel_text="Cancel",
+            accent="#ef4444"
         )
         if not confirm:
             return
@@ -1614,7 +1717,7 @@ class YubiDash(ctk.CTk):
 
             new_data = [item for item in datos if item['serial'].upper() != original_serial.upper()]
             if len(new_data) == len(datos):
-                self.show_message("❌ Not Found", "The selected yubikey could not be deleted", "error")
+                self.show_message("Delete failed", "The selected yubikey could not be deleted.", "error")
                 return
 
             with open(JSON_FILE, 'w', encoding='utf-8') as f:
@@ -1852,11 +1955,11 @@ Current State: {estado_actual.upper()}
     def on_register_submit(self):
         serial = self.entry_nueva.get().strip().upper()
         if not serial:
-            self.label_nueva.configure(text="⚠️ Empty field", text_color="#f59e0b")
+            self.show_message("Required field", "Enter a serial number to continue.", "warning")
             return
         
         if self.serial_exists(serial):
-            self.label_nueva.configure(text="⚠️ Serial already registered", text_color="#f59e0b")
+            self.show_message("Duplicate serial", "This serial is already registered.", "warning")
             return
         
         self.ask_user_and_pipkins(serial)
@@ -1922,13 +2025,12 @@ Current State: {estado_actual.upper()}
     def process_break_lunch_scan(self):
         serial = self.entry_ingreso.get().strip().upper()
         if not serial:
-            self.label_ingreso.configure(text="⚠️ Empty field", text_color="#f59e0b")
+            self.show_message("Required field", "Enter a serial number to continue.", "warning")
             return
         
         item_data = self.find_yubikey(serial)
         if not item_data:
-            self.label_ingreso.configure(text="❌ Serial not found", text_color="#ef4444")
-            self.after(3000, lambda: self.label_ingreso.configure(text=""))
+            self.show_message("Item not found", "The serial was not found in the inventory.", "error")
             return
         
         estado_actual = item_data['estado']
@@ -1965,18 +2067,17 @@ Current State: {estado_actual.upper()}
         
         with open(JSON_FILE, 'w', encoding='utf-8') as f:
             json.dump(datos, f, indent=4, ensure_ascii=False)
-        
+
         if check_out:
-            msg = f"✅ Checked-out - Back to In Use"
+            title = "Break/Lunch check-out complete"
+            message = f"{serial} was checked out and is back In Use."
         else:
-            msg = f"✅ Check-in to {tipo_break}"
-        
-        self.label_ingreso.configure(text=msg,
-                                    text_color=SUCCESS_GREEN,
-                                    font=("Inter", RESPONSIVE.get_font_size(14), "bold"))
+            title = "Break/Lunch check-in complete"
+            message = f"{serial} was checked in to {tipo_break}."
+
+        self.show_message(title, message, "success")
         self.entry_ingreso.delete(0, 'end')
         self.refresh_all_views()
-        self.after(3000, lambda: self.label_ingreso.configure(text=""))
 
     def ask_break_type(self, serial):
         modal = ctk.CTkToplevel(self)
@@ -2092,13 +2193,12 @@ Current State: {estado_actual.upper()}
     def process_assign_return_scan(self):
         serial = self.entry_asignacion.get().strip().upper()
         if not serial:
-            self.label_asignacion.configure(text="⚠️ Empty field", text_color="#f59e0b")
+            self.show_message("Required field", "Enter a serial number to continue.", "warning")
             return
         
         item_data = self.find_yubikey(serial)
         if not item_data:
-            self.label_asignacion.configure(text="❌ Serial not found", text_color="#ef4444")
-            self.after(3000, lambda: self.label_asignacion.configure(text=""))
+            self.show_message("Item not found", "The serial was not found in the inventory.", "error")
             return
         
         estado_actual = item_data['estado']
@@ -2167,7 +2267,7 @@ Current State: {estado_actual.upper()}
     def process_loss_damage_scan(self):
         search_value = self.entry_perdida.get().strip().upper()
         if not search_value:
-            self.label_perdida.configure(text="⚠️ Empty field", text_color="#f59e0b")
+            self.show_message("Required field", "Enter a serial number or Pipkins code to continue.", "warning")
             return
         
         item_data = self.find_yubikey(search_value)
@@ -2179,8 +2279,7 @@ Current State: {estado_actual.upper()}
             search_method = "Serial"
         
         if not item_data:
-            self.label_perdida.configure(text="❌ Serial or Pipkins not found", text_color="#ef4444")
-            self.after(3000, lambda: self.label_perdida.configure(text=""))
+            self.show_message("Item not found", "The serial or Pipkins code was not found in the inventory.", "error")
             return
         
         estado_actual = item_data['estado']
@@ -2214,47 +2313,130 @@ Current State: {estado_actual.upper()}
     def serial_exists(self, serial):
         return self.find_yubikey(serial) is not None
 
+    def duplicate_identifier_message(self, serial, pipkins, exclude_serial=None):
+        serial = (serial or "").strip().upper()
+        pipkins = (pipkins or "").strip().upper()
+        exclude_serial = (exclude_serial or "").strip().upper()
+
+        if not os.path.isfile(JSON_FILE):
+            return None
+
+        with open(JSON_FILE, 'r', encoding='utf-8') as f:
+            datos = json.load(f)
+
+        for item in datos:
+            item_serial = item.get('serial', '').strip().upper()
+            item_pipkins = item.get('codigo_pipkins', '').strip().upper()
+
+            if exclude_serial and item_serial == exclude_serial:
+                continue
+
+            if serial and item_serial == serial:
+                return f"This serial already exists: {item_serial}."
+
+            if pipkins and item_pipkins and item_pipkins == pipkins:
+                return f"This Pipkins code already exists: {item_pipkins}."
+
+        return None
+
     def show_message(self, title, message, type="info"):
-        modal = ctk.CTkToplevel(self)
-        modal.title(title)
-        
-        modal_width = 500 if not RESPONSIVE.is_laptop else 400
-        modal_height = 280 if not RESPONSIVE.is_laptop else 240
-        modal.geometry(RESPONSIVE.center_modal(self, modal_width, modal_height))
-        modal.minsize(350, 220)
-        
-        modal.grab_set()
-        
-        if type == "info":
-            color = "#38bdf8"
-            icon = "ℹ️"
-        elif type == "error":
-            color = "#ef4444"
-            icon = "❌"
-        elif type == "warning":
-            color = "#f59e0b"
-            icon = "⚠️"
-        else:
-            color = SUCCESS_GREEN
-            icon = "✅"
-        
-        main_frame = ctk.CTkFrame(modal, fg_color=SLATE_GRAY, corner_radius=15,
-                                 border_width=1, border_color="#334155")
-        main_frame.pack(fill="both", expand=True, padx=20, pady=20)
-        
-        scrollable_frame = self.create_scrollable_frame(main_frame, accent="#f59e0b")
-        scrollable_frame.pack(fill="both", expand=True, padx=15, pady=15)
-        
-        ctk.CTkLabel(scrollable_frame, text=f"{icon} {message}",
-                    font=("Inter", RESPONSIVE.get_font_size(14)),
-                    text_color=color,
-                    wraplength=350,
-                    justify="center").pack(pady=30)
-        
-        ctk.CTkButton(scrollable_frame, text="OK", command=modal.destroy,
-                     fg_color="#475569", hover_color="#64748b",
-                     font=("Inter", RESPONSIVE.get_font_size(14)),
-                     width=120, height=38, corner_radius=10).pack(pady=15)
+        self.show_toast(title, message, type)
+
+    def ensure_toast_container(self):
+        if self.toast_container and self.toast_container.winfo_exists():
+            return self.toast_container
+
+        self.toast_container = ctk.CTkFrame(self, fg_color="transparent")
+        self.toast_container.place(relx=0.985, rely=0.03, anchor="ne")
+        return self.toast_container
+
+    def show_toast(self, title, message, type="info", duration=2400):
+        if not self.winfo_exists():
+            return
+
+        panel_theme = self.get_panel_theme(self.current_panel_name or "nueva")
+        styles = {
+            "info": {"accent": "#38bdf8", "title": "#e0f2fe", "message": "#cbd5e1", "icon": "ℹ️"},
+            "success": {"accent": SUCCESS_GREEN, "title": "#d1fae5", "message": "#d1fae5", "icon": "✅"},
+            "warning": {"accent": "#f59e0b", "title": "#fef3c7", "message": "#fde68a", "icon": "⚠️"},
+            "error": {"accent": "#ef4444", "title": "#fee2e2", "message": "#fecaca", "icon": "❌"},
+        }
+        style = styles.get(type, styles["info"])
+
+        self.update_idletasks()
+        self.toast_windows = [window for window in self.toast_windows if window.winfo_exists()]
+
+        toast_width = 320
+        toast_height = 72
+        gap = 8
+        margin_x = 18
+        margin_y = 16
+        offset_y = sum(toast_height + gap for _ in self.toast_windows)
+
+        toast = ctk.CTkToplevel(self)
+        toast.overrideredirect(True)
+        toast.attributes("-topmost", True)
+        try:
+            toast.attributes("-alpha", 0.98)
+        except Exception:
+            pass
+        toast.configure(fg_color=panel_theme["row"])
+
+        x_pos = self.winfo_rootx() + self.winfo_width() - toast_width - margin_x
+        y_pos = self.winfo_rooty() + margin_y + offset_y
+        toast.geometry(f"{toast_width}x{toast_height}+{x_pos}+{y_pos}")
+
+        card = ctk.CTkFrame(
+            toast,
+            fg_color=panel_theme["row"],
+            corner_radius=8,
+            border_width=1,
+            border_color=panel_theme["accent"],
+            width=toast_width,
+            height=toast_height,
+        )
+        card.pack(fill="both", expand=True)
+        card.pack_propagate(False)
+
+        content = ctk.CTkFrame(card, fg_color="transparent")
+        content.pack(fill="both", expand=True, padx=10, pady=8)
+        content.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkLabel(content, text=style["icon"], font=("Segoe UI Emoji", 15)).grid(
+            row=0, column=0, rowspan=2, sticky="n", padx=(0, 10)
+        )
+        ctk.CTkLabel(content, text=title, font=("Inter", 12, "bold"), text_color=panel_theme["accent"]).grid(
+            row=0, column=1, sticky="w"
+        )
+        ctk.CTkLabel(content, text=message, font=("Inter", 10), text_color=style["message"], wraplength=210,
+                    justify="left").grid(row=1, column=1, sticky="w", pady=(2, 0))
+
+        close_button = ctk.CTkButton(
+            content,
+            text="✕",
+            command=toast.destroy,
+            fg_color="transparent",
+            hover_color="#334155",
+            text_color="#94a3b8",
+            width=20,
+            height=20,
+            corner_radius=4,
+        )
+        close_button.grid(row=0, column=2, rowspan=2, sticky="ne", padx=(10, 0))
+
+        def dismiss_toast():
+            if toast.winfo_exists():
+                toast.destroy()
+
+        job = toast.after(duration, dismiss_toast)
+        self.toast_close_jobs[str(toast)] = job
+        self.toast_windows.append(toast)
+
+        def cleanup(_event=None):
+            self.toast_close_jobs.pop(str(toast), None)
+            self.toast_windows = [window for window in self.toast_windows if window != toast and window.winfo_exists()]
+
+        toast.bind("<Destroy>", cleanup)
 
     def load_recent_data(self, tipo):
         tree = getattr(self, f"tree_recent_{tipo}", None)
@@ -2668,7 +2850,11 @@ Current State: {estado_actual.upper()}
             usuario = vars_dict['usuario_var'].get().strip()
             pipkins = vars_dict['pipkins_var'].get().strip()
             if not usuario or not pipkins:
-                error_label.configure(text="⚠️ All fields are required")
+                self.show_message("Required fields", "User name and Pipkins code are required.", "warning")
+                return
+            duplicate_message = self.duplicate_identifier_message(serial, pipkins)
+            if duplicate_message:
+                self.show_message("Duplicate value", duplicate_message, "warning")
                 return
             self.save_new_yubikey(serial, usuario, pipkins)
             result['ok'] = True
@@ -2680,6 +2866,11 @@ Current State: {estado_actual.upper()}
                      corner_radius=12, height=45, width=200).pack(pady=20)
 
     def save_new_yubikey(self, serial, usuario, pipkins):
+        duplicate_message = self.duplicate_identifier_message(serial, pipkins)
+        if duplicate_message:
+            self.show_message("Duplicate value", duplicate_message, "warning")
+            return False
+
         now = datetime.now()
         nueva = {
             "serial": serial,
@@ -2704,12 +2895,10 @@ Current State: {estado_actual.upper()}
         with open(JSON_FILE, 'w', encoding='utf-8') as f:
             json.dump(datos, f, indent=4, ensure_ascii=False)
         
-        self.label_nueva.configure(text="✅ Registered Successfully!",
-                                  text_color=SUCCESS_GREEN,
-                                  font=("Inter", RESPONSIVE.get_font_size(14), "bold"))
+        self.show_message("Registration complete", f"{serial} was registered successfully.", "success")
         self.entry_nueva.delete(0, 'end')
         self.refresh_all_views()
-        self.after(3000, lambda: self.label_nueva.configure(text=""))
+        return True
 
     def setup_recent_table_responsive(self, parent, tipo):
         theme = self.get_panel_theme(tipo)
@@ -2954,11 +3143,6 @@ Current State: {estado_actual.upper()}
                                      font=("Inter", RESPONSIVE.get_font_size(13)),
                                      corner_radius=10)
         comment_text.pack(pady=10, padx=30)
-        try:
-            modal.after(100, lambda: self.safe_focus_widget(modal, comment_text))
-        except:
-            pass
-        
         result = {'ok': False, 'comentario': ''}
         
         def aceptar():
@@ -3008,12 +3192,9 @@ Current State: {estado_actual.upper()}
         with open(JSON_FILE, 'w', encoding='utf-8') as f:
             json.dump(datos, f, indent=4, ensure_ascii=False)
         
-        self.label_asignacion.configure(text="✅ Returned successfully!",
-                                       text_color=SUCCESS_GREEN,
-                                       font=("Inter", RESPONSIVE.get_font_size(14), "bold"))
+        self.show_message("Return complete", f"{serial} was returned successfully.", "success")
         self.entry_asignacion.delete(0, 'end')
         self.refresh_all_views()
-        self.after(3000, lambda: self.label_asignacion.configure(text=""))
 
     def ask_nuevo_usuario_pipkins(self, serial):
         modal = ctk.CTkToplevel(self)
@@ -3070,7 +3251,11 @@ Current State: {estado_actual.upper()}
             usuario = vars_dict['usuario_var'].get().strip()
             pipkins = vars_dict['pipkins_var'].get().strip()
             if not usuario or not pipkins:
-                error_label.configure(text="⚠️ All fields are required")
+                self.show_message("Required fields", "User name and Pipkins code are required.", "warning")
+                return
+            duplicate_message = self.duplicate_identifier_message(serial, pipkins, exclude_serial=serial)
+            if duplicate_message:
+                self.show_message("Duplicate value", duplicate_message, "warning")
                 return
             self.save_assign_yubikey(serial, usuario, pipkins)
             result['ok'] = True
@@ -3082,6 +3267,11 @@ Current State: {estado_actual.upper()}
                      corner_radius=12, height=45, width=200).pack(pady=20)
 
     def save_assign_yubikey(self, serial, usuario, pipkins):
+        duplicate_message = self.duplicate_identifier_message(serial, pipkins, exclude_serial=serial)
+        if duplicate_message:
+            self.show_message("Duplicate value", duplicate_message, "warning")
+            return False
+
         now = datetime.now()
         
         with open(JSON_FILE, 'r', encoding='utf-8') as f:
@@ -3108,12 +3298,10 @@ Current State: {estado_actual.upper()}
         with open(JSON_FILE, 'w', encoding='utf-8') as f:
             json.dump(datos, f, indent=4, ensure_ascii=False)
         
-        self.label_asignacion.configure(text="✅ Assigned successfully!",
-                                       text_color=SUCCESS_GREEN,
-                                       font=("Inter", RESPONSIVE.get_font_size(14), "bold"))
+        self.show_message("Assignment complete", f"{serial} was assigned successfully.", "success")
         self.entry_asignacion.delete(0, 'end')
         self.refresh_all_views()
-        self.after(3000, lambda: self.label_asignacion.configure(text=""))
+        return True
 
     def ask_loss_damage_type(self, serial, found_by, search_value):
         modal = ctk.CTkToplevel(self)
@@ -3219,11 +3407,6 @@ Found via: {found_by} ({search_value})"""
                                      font=("Inter", RESPONSIVE.get_font_size(13)),
                                      corner_radius=10)
         comment_text.pack(pady=10, padx=30)
-        try:
-            modal.after(100, lambda: self.safe_focus_widget(modal, comment_text))
-        except:
-            pass
-        
         result = {'ok': False, 'comentario': ''}
         
         def aceptar():
@@ -3269,12 +3452,9 @@ Found via: {found_by} ({search_value})"""
         with open(JSON_FILE, 'w', encoding='utf-8') as f:
             json.dump(datos, f, indent=4, ensure_ascii=False)
         
-        self.label_perdida.configure(text=f"✅ {tipo_incidente} reported!",
-                                    text_color=SUCCESS_GREEN,
-                                    font=("Inter", RESPONSIVE.get_font_size(14), "bold"))
+        self.show_message(f"{tipo_incidente} reported", f"{serial} was marked as {tipo_incidente.lower()}.", "success")
         self.entry_perdida.delete(0, 'end')
         self.refresh_all_views()
-        self.after(3000, lambda: self.label_perdida.configure(text=""))
 
     def on_closing(self):
         if self.ui_animation_job:
@@ -3282,6 +3462,25 @@ Found via: {found_by} ({search_value})"""
                 self.after_cancel(self.ui_animation_job)
             except Exception:
                 pass
+        for job in list(self.tip_animation_jobs.values()):
+            try:
+                self.after_cancel(job)
+            except Exception:
+                pass
+        self.tip_animation_jobs.clear()
+        for job in list(self.toast_close_jobs.values()):
+            try:
+                self.after_cancel(job)
+            except Exception:
+                pass
+        self.toast_close_jobs.clear()
+        for window in list(self.toast_windows):
+            try:
+                if window.winfo_exists():
+                    window.destroy()
+            except Exception:
+                pass
+        self.toast_windows.clear()
         if self.scanner.is_connected:
             self.scanner.disconnect()
         self.destroy()
